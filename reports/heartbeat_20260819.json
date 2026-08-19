@@ -1,0 +1,63 @@
+{
+  "at": "2026-08-19T18:24:29+00:00",
+  "host": "Stavross-Mac-mini.local",
+  "resource": {
+    "level": "RED",
+    "reasons": [
+      "YELLOW: swap used 1.05 GB",
+      "RED: load1 39.57",
+      "YELLOW: browser procs 7"
+    ],
+    "ram_reclaimable_gb": 6.778,
+    "swap_used_gb": 1.047,
+    "load1": 39.57,
+    "disk_store_free_gb": 5248.3,
+    "browser_procs": 7,
+    "store_mounted": true
+  },
+  "sources": {
+    "ebay": {
+      "state": "BLOCKED",
+      "since": "2026-08-19T18:05:54+00:00",
+      "probe_not_before": "2026-08-22T18:00:00+00:00",
+      "last_probe": null
+    }
+  },
+  "processes": {
+    "phase_backfill": [],
+    "sources_supervisor": [],
+    "deep_scrub_runner": [
+      77559
+    ],
+    "canonical_migrate": [
+      78055,
+      78086
+    ]
+  },
+  "launchd": {
+    "com.mazi.deep-scrub-nightly": {
+      "loaded": true,
+      "state": "not running",
+      "runs": "4",
+      "last_exit_code": "0"
+    },
+    "com.mazi.deep-scrub-drain": {
+      "loaded": true,
+      "state": "running",
+      "runs": "378",
+      "last_exit_code": "0"
+    }
+  },
+  "store": {
+    "legacy_json_newest_write_h_ago": 1314.52,
+    "canonical_parquet_newest_write_h_ago": null
+  },
+  "verdict": "CRIT",
+  "crit": [
+    "resource RED",
+    "no store write for 1315 h (freshness CRIT > 24 h)"
+  ],
+  "warn": [
+    "ebay BLOCKED"
+  ]
+}

@@ -1,0 +1,152 @@
+{
+ "started_at": "2026-08-19T18:24:16+00:00",
+ "store": "/Volumes/MAZI_EVIDENCE_6TB/whatnot-sniper/ebay_scrub_store",
+ "out": "/Volumes/MAZI_EVIDENCE_6TB/whatnot-sniper/ebay_scrub_store/external_store",
+ "memory_limit": "1400MB",
+ "threads": 1,
+ "steps": [
+  {
+   "step": "raw_parquet",
+   "file": "ebay_comps.json",
+   "skipped": true
+  },
+  {
+   "step": "raw_parquet",
+   "file": "player_comps.json",
+   "skipped": true
+  },
+  {
+   "step": "raw_parquet",
+   "file": "raw_player_comps.json",
+   "skipped": true
+  }
+ ],
+ "host": "Stavross-Mac-mini.local",
+ "raw_rows_total": 3633806,
+ "canonical_rows": 3255365,
+ "rows_without_item_id": 0,
+ "ids_with_dupes": 333066,
+ "duplicates_removed": 378441,
+ "price_conflicts": 1465,
+ "date_conflicts": 384,
+ "image_conflicts": 912,
+ "price_missing": 0,
+ "sold_date_missing": 4,
+ "best_offer_unknown": 0,
+ "best_offer_true": 1463273,
+ "image_missing": 0,
+ "graded_rows": 505279,
+ "multi_source_ids": 0,
+ "multi_query_ids": 15277,
+ "sold_date_min": "2015-04-08",
+ "sold_date_max": "2026-06-25",
+ "first_seen_min": "2026-04-08 02:48:53.391880",
+ "last_seen_max": "2026-06-25 16:52:02.681490",
+ "canonical_by_month_2025plus": [
+  {
+   "year": 2025,
+   "month": 1,
+   "rows": 108
+  },
+  {
+   "year": 2025,
+   "month": 2,
+   "rows": 73
+  },
+  {
+   "year": 2025,
+   "month": 3,
+   "rows": 105
+  },
+  {
+   "year": 2025,
+   "month": 4,
+   "rows": 91
+  },
+  {
+   "year": 2025,
+   "month": 5,
+   "rows": 121
+  },
+  {
+   "year": 2025,
+   "month": 6,
+   "rows": 126
+  },
+  {
+   "year": 2025,
+   "month": 7,
+   "rows": 196
+  },
+  {
+   "year": 2025,
+   "month": 8,
+   "rows": 580
+  },
+  {
+   "year": 2025,
+   "month": 9,
+   "rows": 1969
+  },
+  {
+   "year": 2025,
+   "month": 10,
+   "rows": 939
+  },
+  {
+   "year": 2025,
+   "month": 11,
+   "rows": 2397
+  },
+  {
+   "year": 2025,
+   "month": 12,
+   "rows": 1607
+  },
+  {
+   "year": 2026,
+   "month": 1,
+   "rows": 277260
+  },
+  {
+   "year": 2026,
+   "month": 2,
+   "rows": 442253
+  },
+  {
+   "year": 2026,
+   "month": 3,
+   "rows": 748309
+  },
+  {
+   "year": 2026,
+   "month": 4,
+   "rows": 839422
+  },
+  {
+   "year": 2026,
+   "month": 5,
+   "rows": 542665
+  },
+  {
+   "year": 2026,
+   "month": 6,
+   "rows": 396044
+  }
+ ],
+ "discovery_source_counts": [
+  {
+   "source": "ebay",
+   "ids": 3255365
+  }
+ ],
+ "canonical_seconds": 166.7,
+ "audit_seconds": 2.8,
+ "sample_query_latency_ms": 563,
+ "raw_parquet_bytes": 1184324275,
+ "canonical_parquet_bytes": 1126172916,
+ "duckdb_file": "/Volumes/MAZI_EVIDENCE_6TB/whatnot-sniper/ebay_scrub_store/external_store/canonical_v1.duckdb",
+ "peak_rss_mb": 2614,
+ "finished_at": "2026-08-19T18:27:06+00:00",
+ "originals_modified": false
+}

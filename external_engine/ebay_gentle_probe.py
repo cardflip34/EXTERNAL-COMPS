@@ -42,8 +42,25 @@ def probe_url(query: str = PROBE_QUERY) -> str:
             f"&_sop=13&_ipg=60")
 
 
+def _block_signature_vendored(page_text: str):
+    """Verbatim logic of ebay_bulk_scraper.block_signature (kept in sync; used when the production
+    module cannot be imported, e.g. lane venv without Playwright / unit tests)."""
+    t = (page_text or "").lower()
+    if "verify" in t and "robot" in t:
+        return "captcha"
+    if ("something went wrong on our end" in t or "error page" in t
+            or "access denied" in t or "blocked" in t):
+        return "blocked"
+    if "did not match any" in t or "0 results" in t:
+        return "no_results"
+    return None
+
+
 def classify(page_text: str, item_count: int) -> str:
-    from ebay_bulk_scraper import block_signature  # production detector
+    try:
+        from ebay_bulk_scraper import block_signature  # production detector (needs playwright importable)
+    except Exception:
+        block_signature = _block_signature_vendored
     sig = block_signature(page_text)
     if sig == "captcha":
         return "RED_CAPTCHA"
