@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  External Comps V2 keep-alive (installed 2026-08-19 by the External Comps lane, operator GO).
+  Every 600 s: if external_engine/supervisor.py is not running, relaunch it THROUGH `ssh localhost` so it
+  inherits Remote Login's Full Disk Access to the 6 TB store (launchd itself cannot touch the volume — TCC).
+  Rollback: launchctl bootout gui/$(id -u)/com.mazi.extcomps-keepalive && rm this plist;
+            pkill -f external_engine/supervisor.py
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.mazi.extcomps-keepalive</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/stavrosaimini/whatnot-sniper/ops/extcomps_keepalive.sh</string>
+  </array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>WorkingDirectory</key><string>/Users/stavrosaimini/whatnot-sniper</string>
+  <key>StandardOutPath</key><string>/Users/stavrosaimini/Library/Logs/mazi/launchd/extcomps_keepalive.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/stavrosaimini/Library/Logs/mazi/launchd/extcomps_keepalive.err.log</string>
+</dict></plist>

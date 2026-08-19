@@ -27,7 +27,12 @@ Companion to `EXTERNAL_MARKET_ENGINE_V2_AUDIT_20260819.md`. Times PDT unless mar
 | Push `~/EXTERNAL-COMPS` | no GitHub credentials on Mini | `git push -u origin main` once a token/key is present |
 | Launchd-driven writes to the 6 TB volume | TCC (confirmed) | Full Disk Access for `/bin/bash` + `/usr/bin/python3` — or run V2 services from ssh-nohup |
 
-## NEEDS OPERATOR ACTION / DECISION
+## UPDATE 12:20 PDT — operator GO received (1 authority, 3 agents-as-is, 4 polite mode, 5 probe automated)
+- **Supervisor loop installed**: `com.mazi.extcomps-keepalive` (launchd, every 600 s, RunAtLoad) → `ssh localhost` → `external_engine/supervisor.py` (governor 60 s, heartbeat 20 min, **eBay probe auto-runs at/after 2026-08-22T18:00Z**, single-instance lock). Verified: supervisor under sshd writes the store (`store_writable=true`). TCC re-confirmed: launchd itself cannot even `ls` the volume, hence the ssh hop. Runbook: `docs/EXTERNAL_FAILURE_RECOVERY.md`.
+- **Run ledger** (`external_engine/ledger.py`, SQLite WAL at `external_store/ledger/`) and **canonical writer** (`external_engine/canonical_writer.py`: fcntl single writer, normalize → dedup on `(item_id, sold_date)` vs `canonical_index` → append partition Parquet → ledger). Tests 4/4. Production index 3,267,075 keys; dry-run of the staged nightly file: 11,055 dup / 263 multi-qty in 0.95 s.
+- **GitHub**: the Mini's SSH key exists but is not authorized — add it as a **deploy key with write access** on `cardflip34/EXTERNAL-COMPS` (Settings → Deploy keys → Add): `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPNa5nT/p2xktMpj25a4QzuGvImZ1Kp40aXjMAuXJ6Bz stavrosaimini@Stavross-Mac-mini.local`. Remote already switched to SSH; then `cd ~/EXTERNAL-COMPS && git push -u origin main`.
+
+## NEEDS OPERATOR ACTION / DECISION (remaining)
 1. **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access) for `/bin/bash` and `/usr/bin/python3` if V2 services are to run under launchd; otherwise I will run them from ssh-nohup like `sources_supervisor.py` did.
 2. **GitHub auth** for `cardflip34/EXTERNAL-COMPS` (and read access to `whatnot-sniper-m4` if you want the Mini to pull the branch).
 3. **Deep-scrub agents**: keep loaded with eBay gated (recommended — SCP history keeps flowing to trusted charts) or pause the drain until the V2 governor owns eBay. I did not change either agent.
