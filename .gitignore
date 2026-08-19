@@ -1,0 +1,20 @@
+# NEVER publish comp-store dumps, evidence, cookies, tokens, env, logs, buyer/bidder data
+*.json
+!external_engine/**/*.schema.json
+!reports/**/*.json
+*.jsonl
+*.db
+*.duckdb
+*.parquet
+*.log
+*.out
+*.bak*
+.env*
+*cookie*
+*token*
+*secret*
+browser_state/
+__pycache__/
+*.pyc
+.DS_Store
+.venv*/

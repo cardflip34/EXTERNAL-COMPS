@@ -1,0 +1,28 @@
+{
+  "source": "ebay",
+  "state": "BLOCKED",
+  "events": [
+    {
+      "at": "2026-08-19T18:05:54+00:00",
+      "type": "state_change",
+      "from": "HEALTHY",
+      "to": "BLOCKED",
+      "note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time."
+    },
+    {
+      "at": "2026-08-19T18:05:54+00:00",
+      "type": "block_confirmed",
+      "detail": "nightly 2026-08-19T10:30Z: 13 blocked/15; drain 2026-08-19T17:52Z: 5 blocked/5 (pre-gate process)"
+    },
+    {
+      "at": "2026-08-19T18:05:54+00:00",
+      "type": "contact_zeroed",
+      "detail": "ebay_arm_enabled() gate restored in mazi_db/scripts/deep_scrub_runner.py at 2026-08-19T17:55Z; backup .bak.extcomps_gate_restore_20260819"
+    }
+  ],
+  "updated_at": "2026-08-19T18:05:54+00:00",
+  "state_since": "2026-08-19T18:05:54+00:00",
+  "probe_not_before": "2026-08-22T18:00:00+00:00",
+  "block_observed_since": "2026-07-01T00:00:00+00:00",
+  "state_note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time."
+}
