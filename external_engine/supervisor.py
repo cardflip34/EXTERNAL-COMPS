@@ -38,7 +38,24 @@ TICK_S = 60
 HEARTBEAT_MIN = 20
 PROBE_MIN_GAP_H = 72
 LOCK_PATH = os.path.expanduser("~/mazi_local_evidence/extcomps_supervisor.lock")
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+LOGDIR = os.path.expanduser("~/Library/Logs/mazi_external_comps")
+
+# Managed lanes (PRD §46/§49): long-running children the supervisor keeps alive, gated by the resource governor.
+# Each inherits this process's sshd context (FDA to the store). NO eBay anywhere in these lanes — eBay is gated
+# separately by source_health until the probe is GREEN and the polite adapter ships.
+MANAGED_LANES = [
+    {
+        "name": "sources_supervisor",           # Fanatics / Goldin / TCGplayer / MySlabs / REA / AuctionReport → Neon
+        "cmd": [PY, "-u", "tools/sources_supervisor.py"],
+        "pattern": "tools/sources_supervisor.py",
+        "log": os.path.join(LOGDIR, "sources_supervisor.out"),
+        "max_level": "YELLOW",                  # run at GREEN/YELLOW; stop after RED_STOP_TICKS consecutive RED ticks
+        "enabled": os.environ.get("EXTCOMPS_LANE_SOURCES", "1") == "1",
+    },
+]
+RED_STOP_TICKS = 3
+LEVEL_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
 
 _stop = False
 
@@ -118,6 +135,57 @@ def maybe_probe(state: dict) -> None:
         sh.add_event("ebay", "operator_attention", detail="GREEN probe — eBay resumption pending coordination (polite mode, low volume)", store=STORE)
 
 
+def _lane_pids(pattern: str) -> list[int]:
+    """PIDs whose command line contains `pattern`, excluding ourselves and any shell that merely mentions it."""
+    out = subprocess.run(["/usr/bin/pgrep", "-f", pattern], capture_output=True, text=True).stdout.split()
+    pids = []
+    for p in out:
+        if not p.isdigit() or int(p) == os.getpid():
+            continue
+        cmd = subprocess.run(["/bin/ps", "-o", "command=", "-p", p], capture_output=True, text=True).stdout.strip()
+        # a real lane process is `python -u tools/x.py ...`, not `zsh -c "... tools/x.py ..."`
+        if cmd.startswith(("/bin/zsh", "/bin/bash", "zsh", "bash", "sh ", "/bin/sh")):
+            continue
+        pids.append(int(p))
+    return pids
+
+
+def manage_lanes(state: dict, level: str) -> None:
+    lanes = state.setdefault("lanes", {})
+    for lane in MANAGED_LANES:
+        st = lanes.setdefault(lane["name"], {"red_ticks": 0, "starts": 0})
+        pids = _lane_pids(lane["pattern"])
+        st["pids"] = pids
+        if not lane["enabled"]:
+            st["status"] = "disabled"
+            continue
+        if level == "RED":
+            st["red_ticks"] += 1
+        else:
+            st["red_ticks"] = 0
+        if pids:
+            if st["red_ticks"] >= RED_STOP_TICKS:
+                for p in pids:
+                    try:
+                        os.kill(p, signal.SIGTERM)
+                    except OSError:
+                        pass
+                st["status"] = "stopped_resource_red"; st["last_stop"] = _now().isoformat(timespec="seconds")
+                _log(f"lane {lane['name']}: SIGTERM (resource RED x{st['red_ticks']})")
+            else:
+                st["status"] = "running"
+            continue
+        if LEVEL_RANK[level] > LEVEL_RANK[lane["max_level"]]:
+            st["status"] = f"waiting_resource_{level}"
+            continue
+        os.makedirs(os.path.dirname(lane["log"]), exist_ok=True)
+        with open(lane["log"], "a") as logf:
+            subprocess.Popen(lane["cmd"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+        st["starts"] += 1; st["status"] = "started"; st["last_start"] = _now().isoformat(timespec="seconds")
+        _log(f"lane {lane['name']}: started ({' '.join(lane['cmd'])}) level={level}")
+
+
 def heartbeat(state: dict) -> None:
     rc, out = _run([PY, os.path.join(HERE, "heartbeat.py")], timeout=120)
     state["last_heartbeat"] = {"at": _now().isoformat(timespec="seconds"), "rc": rc,
@@ -154,6 +222,7 @@ def main() -> int:
             state["resource"] = {"level": level, "reasons": reasons, "at": res["at"]}
             if last_hb is None or time.time() - last_hb >= HEARTBEAT_MIN * 60:
                 heartbeat(state); last_hb = time.time()
+            manage_lanes(state, level)
             maybe_probe(state)
             state["ticks"] += 1
             _write_state(state)

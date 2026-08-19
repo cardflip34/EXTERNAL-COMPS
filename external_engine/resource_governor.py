@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 STORE_VOLUME = "/Volumes/MAZI_EVIDENCE_6TB"
 THRESHOLDS = {
     # free RAM GB (inactive+free+speculative counted as reclaimable), swap used GB, 1-min load, disk free GB, browsers
-    "yellow": {"free_gb_lt": 2.0, "swap_used_gb_ge": 1.0, "load1_ge": 12.0, "disk_free_gb_lt": 100.0, "browsers_ge": 6},
-    "red":    {"free_gb_lt": 0.75, "swap_used_gb_ge": 1.8, "load1_ge": 24.0, "disk_free_gb_lt": 25.0, "browsers_ge": 12},
+    "yellow": {"free_gb_lt": 2.0, "swap_used_gb_ge": 1.2, "load1_ge": 16.0, "disk_free_gb_lt": 100.0, "browsers_ge": 6},
+    "red":    {"free_gb_lt": 0.75, "swap_used_gb_ge": 1.8, "load1_ge": 40.0, "disk_free_gb_lt": 25.0, "browsers_ge": 12},
 }
 
 
@@ -65,7 +65,8 @@ def _browser_count() -> int:
     n = 0
     for line in out.splitlines():
         l = line.lower()
-        if ("chromium" in l or "chrome" in l or "ms-playwright" in l) and ("--type=renderer" in l or "headless" in l or "ms-playwright" in l):
+        # only OUR automation browsers (Playwright / headless); the capture fleet's Chrome is not ours to count
+        if ("ms-playwright" in l or "--headless" in l or "headless_shell" in l) and "--type=" not in l:
             n += 1
     return n
 

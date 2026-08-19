@@ -85,7 +85,7 @@ FROM {src}
 # winning row picked via min_by over a composite key (graded first, priced first, earliest capture, then
 # stable by src_file/src_row) — no sort of wide rows, single build side for the final join.
 IDX_SQL = """
-    SELECT observation_id,
+    SELECT observation_id, sold_date,
       count(*)          AS n_observations,
       min(captured_at)  AS first_seen_at,
       max(captured_at)  AS last_seen_at,
@@ -94,24 +94,32 @@ IDX_SQL = """
                          c := COALESCE(captured_at, TIMESTAMP '9999-12-31 00:00:00'),
                          f := src_file, r := src_row)) AS pick
     FROM {normalized} WHERE source_item_id IS NOT NULL AND source_item_id <> ''
-    GROUP BY observation_id"""
+    GROUP BY observation_id, sold_date"""
 
 # Stage 3 — list/conflict aggregation ONLY for ids that actually have duplicates (~10 % of rows)
 AGG_DUP_SQL = """
-    SELECT n.observation_id,
+    SELECT n.observation_id, n.sold_date,
       list(DISTINCT n.discovery_source)                                              AS discovery_sources,
       list(DISTINCT n.subject_query) FILTER (WHERE n.subject_query IS NOT NULL)      AS queries_seen,
       list(DISTINCT n.legacy_comp_id) FILTER (WHERE n.legacy_comp_id IS NOT NULL)    AS legacy_comp_ids,
       count(DISTINCT round(n.sold_price_usd, 2)) FILTER (WHERE n.sold_price_usd IS NOT NULL) > 1 AS price_conflict,
-      count(DISTINCT n.sold_date) FILTER (WHERE n.sold_date IS NOT NULL) > 1                    AS date_conflict,
+      FALSE                                                                                    AS date_conflict,
       count(DISTINCT n.image_url)  FILTER (WHERE n.image_url IS NOT NULL) > 1                   AS image_conflict
     FROM {normalized} n
-    WHERE n.observation_id IN (SELECT observation_id FROM {idx} WHERE n_observations > 1)
-    GROUP BY n.observation_id"""
+    WHERE (n.observation_id, n.sold_date) IN (SELECT (observation_id, sold_date) FROM {idx} WHERE n_observations > 1)
+    GROUP BY n.observation_id, n.sold_date"""
 
 # Stage 4 — assemble canonical: winning row + counts + (dup lists or trivial single-row lists)
+VALUATION_GATE_SQL = """CASE
+           WHEN {p}.sold_price_usd IS NULL OR {p}.sold_price_usd <= 0 THEN 'no_price'
+           WHEN regexp_matches(lower({p}.title), '\\b(u pick|you pick|pick your|choose your|pick from|your choice|u-pick|upick)\\b') THEN 'ambiguous_pick'
+           WHEN regexp_matches(lower({p}.title), '\\b(lot|lots|bundle|collection|packs?|box|boxes|sealed|mystery|repacks?|supplies|wrappers?|checklist)\\b') THEN 'lot_bundle'
+           WHEN {p}.best_offer THEN 'obo'
+           ELSE 'ok' END"""
+
 CANONICAL_JOIN_SQL = """
-    SELECT r.observation_id, r.source, r.source_item_id, r.title, r.sold_price_usd, 'USD' AS currency,
+    SELECT r.observation_id || ':' || COALESCE(CAST(r.sold_date AS VARCHAR), 'nodate') AS observation_key,
+           r.observation_id, r.source, r.source_item_id, r.title, r.sold_price_usd, 'USD' AS currency,
            r.best_offer, r.sold_date, r.captured_at, r.shipping_text, r.bids_text, r.condition,
            r.grade_company, r.grade,
            CASE WHEN r.grade_company IS NOT NULL THEN 'graded' ELSE 'raw_or_unknown' END AS raw_or_graded,
@@ -123,15 +131,16 @@ CANONICAL_JOIN_SQL = """
            COALESCE(d.price_conflict, FALSE) AS price_conflict,
            COALESCE(d.date_conflict,  FALSE) AS date_conflict,
            COALESCE(d.image_conflict, FALSE) AS image_conflict,
+           """ + VALUATION_GATE_SQL.format(p="r") + """ AS valuation_gate,
            r.src_file AS chosen_src_file, r.src_row AS chosen_src_row,
            '{normalizer_version}' AS normalizer_version,
            COALESCE(year(r.sold_date), 0)  AS year,
            COALESCE(month(r.sold_date), 0) AS month
     FROM {normalized} r
     JOIN {idx} i ON i.pick.src_file = r.src_file AND i.pick.src_row = r.src_row
-    LEFT JOIN {agg_dup} d ON d.observation_id = r.observation_id"""
+    LEFT JOIN {agg_dup} d ON d.observation_id = r.observation_id AND d.sold_date IS NOT DISTINCT FROM r.sold_date"""
 
-NORMALIZER_VERSION = "1.0.0"
+NORMALIZER_VERSION = "1.1.0"  # 1.1: canonical key = (item_id, sold_date); valuation_gate column
 
 
 def run_canonical_stages(con, normalized_rel: str = "normalized_t", log=None) -> str:

@@ -143,7 +143,8 @@ class CanonicalWriter:
                 # shape exactly like the migration's canonical rows (single observation → trivial lists)
                 self.con.execute(f"""
                     CREATE OR REPLACE TEMP TABLE stage_canon AS
-                    SELECT observation_id, source, source_item_id, title, sold_price_usd, 'USD' AS currency,
+                    SELECT observation_id || ':' || COALESCE(CAST(sold_date AS VARCHAR), 'nodate') AS observation_key,
+                           observation_id, source, source_item_id, title, sold_price_usd, 'USD' AS currency,
                            best_offer, sold_date, captured_at, shipping_text, bids_text, condition, grade_company, grade,
                            CASE WHEN grade_company IS NOT NULL THEN 'graded' ELSE 'raw_or_unknown' END AS raw_or_graded,
                            source_url, image_url, subject_query AS primary_subject_query,
@@ -152,6 +153,7 @@ class CanonicalWriter:
                            CASE WHEN subject_query IS NULL THEN [] ELSE [subject_query] END AS queries_seen,
                            CASE WHEN legacy_comp_id IS NULL THEN [] ELSE [legacy_comp_id] END AS legacy_comp_ids,
                            FALSE AS price_conflict, FALSE AS date_conflict, FALSE AS image_conflict,
+                           {cm.VALUATION_GATE_SQL.format(p="stage_new")} AS valuation_gate,
                            src_file AS chosen_src_file, src_row AS chosen_src_row,
                            '{cm.NORMALIZER_VERSION}' AS normalizer_version,
                            COALESCE(year(sold_date), 0) AS year, COALESCE(month(sold_date), 0) AS month

@@ -106,11 +106,25 @@ class CanonicalTests(unittest.TestCase):
         self.assertTrue(first.startswith("2026-04-10")); self.assertTrue(last.startswith("2026-05-01"))
         self.assertFalse(pc); self.assertFalse(dc); self.assertFalse(ic)
 
-    def test_conflict_flags(self):
+    def test_conflict_flags_and_multiqty_rows(self):
+        # v1.1: same item id, DIFFERENT sold dates = two legitimate sales (multi-quantity listing) → two rows
         con = self._load([_v1(5, price="10.0", date="Mar 1, 2026", img="https://i/x.webp"),
-                          _v1(5, price="12.0", date="Mar 2, 2026", img="https://i/y.webp", cid="PL-2")])
-        pc, dc, ic, n = con.execute("SELECT price_conflict, date_conflict, image_conflict, n_observations FROM canonical_t").fetchone()
-        self.assertTrue(pc); self.assertTrue(dc); self.assertTrue(ic); self.assertEqual(n, 2)
+                          _v1(5, price="10.0", date="Mar 2, 2026", img="https://i/x.webp", cid="PL-2")])
+        rows = con.execute("SELECT observation_key, n_observations, price_conflict FROM canonical_t ORDER BY 1").fetchall()
+        self.assertEqual([r[0] for r in rows], ["EBAY:5:2026-03-01", "EBAY:5:2026-03-02"])
+        self.assertEqual([r[1] for r in rows], [1, 1]); self.assertFalse(any(r[2] for r in rows))
+        # same id, same date, different price/image = a true conflict on one sale
+        con = self._load([_v1(6, price="10.0", date="Mar 1, 2026", img="https://i/x.webp"),
+                          _v1(6, price="12.0", date="Mar 1, 2026", img="https://i/y.webp", cid="PL-2")])
+        pc, ic, n = con.execute("SELECT price_conflict, image_conflict, n_observations FROM canonical_t").fetchone()
+        self.assertTrue(pc); self.assertTrue(ic); self.assertEqual(n, 2)
+
+    def test_valuation_gate(self):
+        con = self._load([_v1(1, title="2023 Prizm Wembanyama Silver PSA 10"), _v1(2, bo=True),
+                          _v1(3, title="2019 Select Zion U Pick Card Rookie"), _v1(4, title="Lot of 50 basketball cards"),
+                          _v1(5, price="")])
+        g = dict(con.execute("SELECT source_item_id, valuation_gate FROM canonical_t").fetchall())
+        self.assertEqual(g, {"1": "ok", "2": "obo", "3": "ambiguous_pick", "4": "lot_bundle", "5": "no_price"})
 
     def test_raw_parquet_roundtrip_keeps_discovery_source(self):
         """Regression: a raw Parquet path containing 'source=ebay' made DuckDB's Hive auto-detection
