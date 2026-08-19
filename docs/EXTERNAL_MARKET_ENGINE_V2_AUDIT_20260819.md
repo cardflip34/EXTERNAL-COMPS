@@ -78,6 +78,26 @@ All three parse cleanly end-to-end with ijson; 0 rows without an item id; 100 % 
 
 378,441 duplicate rows = **10.41 %** — decomposition: 148,663 intra-`raw_player_comps` + 181,073 `ebay_comps∩player_comps` (the 151,664 `priority_backfill` rows in player_comps carry `EB-` ids) + 43,103 `ebay_comps∩raw_player_comps` + 2 × 2,801 in all three. Dedup key = eBay item id (`/itm/<id>`), present on every row → canonical `EBAY:<item_id>` is safe. Cross-file dupes are *discovery* duplicates (same sale found by bulk and by player matrix) → keep one observation, accumulate `discovery_sources[]` / `queries_seen[]`.
 
+### 7b. Canonical migration prototype — executed today (non-destructive)
+
+`external_engine/canonical_migrate.py` (DuckDB 1.5.5 + Parquet, lane venv), run on the Mini next to the live fleet under a 1.4 GB DuckDB cap, single thread, nice 12:
+
+| stage | result |
+|---|---|
+| raw JSON → raw Parquet (immutable copy, `external_store/raw_parquet/ebay/`) | 3.86 GB JSON → **1.18 GB** Parquet in **~70 s** (20 s / 12 s / 37 s) |
+| normalize both schema variants → `normalized_ebay.parquet` | 3,647,782 rows (incl. staged nightly) in ~45 s |
+| dedup → `external_market_canonical_v1` (`external_store/parquet/source=ebay/year=/month=/`) | **3,267,075 canonical rows** from 3,647,782 raw; **380,707 duplicates removed**; 230,365 ids discovered by >1 source; 15,277 ids by >1 query; ~170 s; 1.13 GB Parquet; peak RSS ~2.6 GB |
+| conflicts across duplicate observations | price 1,558 ids · date 697 · image 912 (≈0.05 %) — the dupes are overwhelmingly identical re-discoveries |
+| completeness after normalisation | price_missing **0**, image_missing 0, best_offer_unknown 0, sold_date_missing 4, graded 505,279 |
+| staged `ebay_nightly_2026-06-15` (PRD §53) | ingested as provenance-stamped raw input (`source=nightly_cron`, `capture_date`): **11,710 new** unique observations, 2,266 already known → deduped by item id |
+| originals modified | **no** (JSON stores untouched; canonical is reproducible from raw Parquet) |
+
+Findings that change the data model:
+- **Multi-quantity listings**: 612 ids have the same price but *different sold dates* across observations (e.g. "U Pick Card" BIN listings sold many times) — those are separate legitimate sales, so the canonical key must become `item_id + sold_date` (or an `observations[]` list) rather than item id alone (PRD §7 assumption). Small today (0.02 %) but systematic.
+- **Identity-ambiguous titles**: 15,440 "U Pick / You Pick / Choose your" rows and 30,776 lot/bundle/pack/box/sealed/mystery rows (the permanent house exclusions) survived scraping → must be gated out of valuation (kept as raw observations, `status = rejected_ambiguous`).
+- **Verified-price rows** (`best_offer = false`): **1,797,375** (55 %) — the pool the MVE should average by default.
+- Storage decision input: DuckDB + Parquet handles the whole store on this Mini inside ~1–1.4 GB with disk spill; analytic queries over 3.27M rows return in ~0.5–1 s on a loaded box. Recommendation stands (§14): raw Parquet + canonical Parquet + DuckDB for analytics/dedup index; SQLite for tiny hot state; Postgres/Neon for trusted rows only.
+
 ## 8. Price completeness
 
 - `player_comps` / `raw_player_comps`: **100 %** parseable `sold_price` > 0.

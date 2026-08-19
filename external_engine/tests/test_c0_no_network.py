@@ -132,6 +132,28 @@ class CanonicalTests(unittest.TestCase):
         got = dict(self.con.execute("SELECT source_item_id, discovery_sources[1] FROM canonical_t").fetchall())
         self.assertEqual(got, {"1": "ebay_player_matrix", "2": "priority_backfill", "3": "ebay_v2_priority"})
 
+    def test_staged_nightly_rows_get_provenance_and_dedup(self):
+        """PRD §53: staged nightly rows (no source/comp_id) are stamped nightly_cron + capture_date and dedup
+        by item id against existing observations (late-arriving sale + already-known sale)."""
+        known = [_v1(900, src="ebay_player_matrix", cid="PL-1")]
+        night = [{k: v for k, v in _v1(900, cid="", src="").items() if k not in ("source", "comp_id")},
+                 {k: v for k, v in _v1(901, cid="", src="", date="Jun 15, 2026").items() if k not in ("source", "comp_id")}]
+        pk = os.path.join(self.tmp.name, "player_comps.json"); pn = os.path.join(self.tmp.name, "ebay_nightly_2026-06-15.raw.json")
+        json.dump(known, open(pk, "w")); json.dump(night, open(pn, "w"))
+        cols = ", ".join(f"'{k}': '{v}'" for k, v in cm.RAW_COLUMNS.items())
+        outs = []
+        for src in (pk, pn):
+            dst = os.path.join(self.tmp.name, os.path.basename(src) + ".parquet"); outs.append(dst)
+            self.con.execute(f"COPY ({cm.raw_select_clause(src)} FROM read_json('{src}', format='array', records=true, columns={{{cols}}})) TO '{dst}' (FORMAT PARQUET)")
+        rel = "read_parquet([" + ", ".join(f"'{p}'" for p in outs) + "], union_by_name=true, hive_partitioning=false)"
+        self.con.execute(f"CREATE OR REPLACE TABLE normalized_t AS {cm.NORMALIZE_SQL.format(src=rel)}")
+        cm.run_canonical_stages(self.con, "normalized_t")
+        rows = {r[0]: r for r in self.con.execute("SELECT source_item_id, n_observations, discovery_sources, CAST(sold_date AS VARCHAR) FROM canonical_t").fetchall()}
+        self.assertEqual(rows["900"][1], 2); self.assertEqual(sorted(rows["900"][2]), ["ebay_player_matrix", "nightly_cron"])
+        self.assertEqual(rows["901"][1], 1); self.assertEqual(rows["901"][2], ["nightly_cron"]); self.assertEqual(rows["901"][3], "2026-06-15")
+        self.assertIn("nightly_cron", cm.raw_select_clause("/x/ebay_nightly_2026-06-15.graded.json"))
+        self.assertNotIn("nightly_cron", cm.raw_select_clause("/x/player_comps.json"))
+
     def test_rerun_is_idempotent(self):
         rows = [_v1(1), _v1(1, cid="PL-2"), _v2(2)]
         con = self._load(rows)

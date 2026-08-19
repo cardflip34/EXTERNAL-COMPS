@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -149,6 +150,27 @@ def run_canonical_stages(con, normalized_rel: str = "normalized_t", log=None) ->
     return "canonical_t"
 
 
+def raw_select_clause(src_path: str) -> str:
+    """SELECT prefix for the raw-Parquet COPY of one JSON file.
+    Staged nightly run files (nightly_runs/ebay_nightly_<date>.*.json) carry no source/comp_id: stamp provenance
+    at raw time (PRD §53) — source 'nightly_cron', capture_date from the filename, captured_at/scraped_at = file
+    mtime. The canonical stage then dedups them by item id like any other observation."""
+    base = os.path.basename(src_path)
+    m_night = re.search(r"ebay_nightly_(\d{4}-\d{2}-\d{2})", base)
+    if m_night:
+        cap_date = m_night.group(1)
+        try:
+            cap_at = datetime.fromtimestamp(os.path.getmtime(src_path), tz=timezone.utc).isoformat(timespec="seconds")
+        except OSError:
+            cap_at = f"{cap_date}T23:59:59+00:00"
+        return (f"SELECT * REPLACE (COALESCE(NULLIF(source,''), 'nightly_cron') AS source, "
+                f"COALESCE(NULLIF(capture_date,''), '{cap_date}') AS capture_date, "
+                f"COALESCE(NULLIF(captured_at,''), '{cap_at}') AS captured_at, "
+                f"COALESCE(NULLIF(scraped_at,''), '{cap_at}') AS scraped_at), "
+                f"'{base}' AS src_file, row_number() OVER () AS src_row")
+    return f"SELECT *, '{base}' AS src_file, row_number() OVER () AS src_row"
+
+
 def rss_mb() -> float:
     if psutil:
         return psutil.Process().memory_info().rss / 1e6
@@ -200,9 +222,10 @@ def main():
             continue
         t0 = time.time(); r0 = rss_mb()
         lim = f" LIMIT {a.limit}" if a.limit else ""
+        select = raw_select_clause(src)
         con.execute(f"""
             COPY (
-              SELECT *, '{os.path.basename(src)}' AS src_file, row_number() OVER () AS src_row
+              {select}
               FROM read_json('{src}', format='array', records=true, columns={{{cols}}},
                              maximum_object_size=33554432){lim}
             ) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)
