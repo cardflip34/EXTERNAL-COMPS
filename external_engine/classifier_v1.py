@@ -126,7 +126,7 @@ def build_lean_case(col: str) -> str:
 def run(store: str, memory_limit: str, limit: int | None) -> dict:
     t0 = time.time()
     out = os.path.join(store, "external_store", "classification"); os.makedirs(out, exist_ok=True)
-    canon = os.path.join(store, "external_store", "parquet", "source=ebay")
+    canon = os.path.join(store, "external_store", "parquet")  # ALL sources
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{memory_limit}'; SET threads=1; SET temp_directory='{os.path.join(store, 'external_store', 'duckdb_tmp')}'")
     lim = f" LIMIT {limit}" if limit else ""

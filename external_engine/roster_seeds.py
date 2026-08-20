@@ -41,7 +41,7 @@ STOP = set("the and of for with card cards a an in to rc rookie psa bgs sgc cgc 
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--store", default=STORE); a = ap.parse_args()
-    canon = os.path.join(a.store, "external_store", "parquet", "source=ebay")
+    canon = os.path.join(a.store, "external_store", "parquet")  # ALL sources (multi-source canonical)
     clf = os.path.join(a.store, "external_store", "classification", "classification_v1.parquet")
     out = os.path.join(a.store, "external_store", "rosters"); os.makedirs(out, exist_ok=True)
     con = duckdb.connect(); con.execute("SET memory_limit='800MB'; SET threads=1")

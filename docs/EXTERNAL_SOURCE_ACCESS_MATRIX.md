@@ -14,10 +14,10 @@ sold history → compliant low-frequency browser acquisition. Never bypass CAPTC
 | REA | vintage sports | decades | `rea_scraper.py --pages 40` | **ACTIVE** (24 h) | canonicalise |
 | AuctionReport (RSS) | multi-house top lots | ~1 y | `auctionreport_scraper.py` | **ACTIVE** (6 h; wrote today) | canonicalise |
 | SportsCardsPro | sports | ~3 y | deep-scrub SCP arm (politeness lock) | **ACTIVE** (trusted-card charts) | keep; respect Cloudflare challenge = stop |
-| Heritage | sports, comics, coins | decades | `heritage_scraper.py` | exists, unscheduled (Apr 12) | verify archive access rules → schedule weekly |
-| COMC | sports, tcg | ~1 y | `comc_scraper.py` | exists, unscheduled | verify → schedule |
-| Pristine Auction | sports | years | `pristine_scraper.py` | exists, unscheduled | verify → schedule |
-| StarStock | sports | ~1 y | `starstock_scraper.py` | exists, unscheduled | low priority |
+| Heritage | sports, comics, coins | decades | `heritage_scraper.py` | **stale selectors** (probed 2026-08-19: page loads, 0 rows) | needs selector repair before scheduling; value redundant with REA/Goldin |
+| COMC | sports, tcg | ~1 y | `comc_scraper.py` | **wrong data type** (probed 2026-08-19: returns LIST/asking prices, not sold) | do NOT feed to comps (violates verified-sale rule); would need a sold-only view |
+| Pristine Auction | sports | years | `pristine_scraper.py` | **stale selectors** (probed 2026-08-19: search submit times out) | needs repair; moderate value |
+| StarStock | sports | ~1 y | `starstock_scraper.py` | **DEAD** (probed 2026-08-19: starstock.com → 302 collectiblexchange.com) | **retire** — site rebranded |
 | 130point | sports, tcg (eBay OBO accepted prices) | ~90 d | none | not built | high value (true OBO prices); verify ToS first |
 | PSA APR | sports, tcg (multi-house realized) | decades | none | not built | verify ToS; good long-history source |
 | Card Ladder | sports, tcg | years | none | not built | licensing decision |

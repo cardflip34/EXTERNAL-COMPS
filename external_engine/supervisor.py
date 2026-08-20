@@ -38,7 +38,7 @@ TICK_S = 60
 HEARTBEAT_MIN = 20
 PROBE_MIN_GAP_H = 72
 LOCK_PATH = os.path.expanduser("~/mazi_local_evidence/extcomps_supervisor.lock")
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 LOGDIR = os.path.expanduser("~/Library/Logs/mazi_external_comps")
 
 # Managed lanes (PRD §46/§49): long-running children the supervisor keeps alive, gated by the resource governor.
@@ -56,6 +56,20 @@ MANAGED_LANES = [
 ]
 RED_STOP_TICKS = 3
 LEVEL_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
+
+# Healers (PRD §46): idempotent "check-and-relaunch" scripts run every N ticks. Unlike lanes (one long-running
+# child the supervisor owns), a healer is a legacy watchdog that manages its OWN children and exits. Running it
+# here makes it reboot-safe via the keep-alive→ssh→supervisor chain (the SCP broad watchdog died on the Aug-15
+# reboot because its launchd agent wasn't loaded — this prevents a repeat without depending on launchd bootstrap).
+HEALERS = [
+    {
+        "name": "scp_broad_watchdog",   # revives run_scp_broad.sh (Jina→SCP, self-throttling) + its Neon bridge
+        "cmd": ["/bin/bash", os.path.expanduser("~/mazi_scp_broad/scp_broad_watchdog.sh")],
+        "every_ticks": 5,               # ~5 min at TICK_S=60, matching the original launchd StartInterval
+        "max_level": "YELLOW",
+        "enabled": os.environ.get("EXTCOMPS_HEALER_SCP_BROAD", "1") == "1" and os.path.exists(os.path.expanduser("~/mazi_scp_broad/scp_broad_watchdog.sh")),
+    },
+]
 
 _stop = False
 
@@ -186,6 +200,22 @@ def manage_lanes(state: dict, level: str) -> None:
         _log(f"lane {lane['name']}: started ({' '.join(lane['cmd'])}) level={level}")
 
 
+def run_healers(state: dict, level: str, tick: int) -> None:
+    hs = state.setdefault("healers", {})
+    for h in HEALERS:
+        st = hs.setdefault(h["name"], {"runs": 0})
+        if not h["enabled"]:
+            st["status"] = "disabled"; continue
+        if LEVEL_RANK[level] > LEVEL_RANK[h["max_level"]]:
+            st["status"] = f"skipped_resource_{level}"; continue
+        if tick % h["every_ticks"] != 0:
+            continue
+        rc, out = _run(h["cmd"], timeout=120)
+        st["runs"] += 1; st["last_run"] = _now().isoformat(timespec="seconds"); st["last_rc"] = rc
+        st["status"] = "ran"
+        _log(f"healer {h['name']}: rc={rc}")
+
+
 def heartbeat(state: dict) -> None:
     rc, out = _run([PY, os.path.join(HERE, "heartbeat.py")], timeout=120)
     state["last_heartbeat"] = {"at": _now().isoformat(timespec="seconds"), "rc": rc,
@@ -223,6 +253,7 @@ def main() -> int:
             if last_hb is None or time.time() - last_hb >= HEARTBEAT_MIN * 60:
                 heartbeat(state); last_hb = time.time()
             manage_lanes(state, level)
+            run_healers(state, level, state["ticks"])
             maybe_probe(state)
             state["ticks"] += 1
             _write_state(state)

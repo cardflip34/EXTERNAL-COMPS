@@ -1,53 +1,53 @@
-# Classification v1 summary (2026-08-19T21:19:21Z)
+# Classification v1 summary (2026-08-19T23:59:17Z)
 
-rows 4,264,776 · subjects mapped 927 · 44.9s
+rows 4,415,598 · subjects mapped 1,029 · 55.3s
 
 ## Category
 | category | rows |
 |---|---|
-| sports | 3,678,675 |
-| pokemon | 489,775 |
-| coins | 39,838 |
-| yugioh | 37,710 |
-| veefriends | 10,786 |
-| comics | 3,169 |
-| tcg_other | 1,724 |
-| video_games | 1,098 |
-| magic | 745 |
-| watches | 669 |
-| funko | 587 |
+| sports | 3,806,232 |
+| pokemon | 511,155 |
+| coins | 39,841 |
+| yugioh | 38,395 |
+| veefriends | 10,843 |
+| comics | 3,523 |
+| tcg_other | 2,054 |
+| video_games | 1,187 |
+| magic | 1,110 |
+| watches | 670 |
+| funko | 588 |
 
 ## Sport (sports rows)
 | sport | rows |
 |---|---|
-| baseball | 1,149,764 |
-| basketball | 1,077,351 |
-| football | 872,760 |
-| hockey | 182,240 |
-| soccer | 112,964 |
-| wrestling | 77,503 |
-| wnba | 61,891 |
-| golf | 43,031 |
-| racing | 35,417 |
-| ufc_mma | 30,117 |
-| unknown | 14,670 |
-| tennis | 10,489 |
-| boxing | 10,478 |
+| baseball | 1,181,280 |
+| basketball | 1,081,263 |
+| football | 878,776 |
+| hockey | 222,971 |
+| soccer | 115,021 |
+| wrestling | 77,930 |
+| wnba | 62,411 |
+| unknown | 56,919 |
+| golf | 41,806 |
+| racing | 36,070 |
+| ufc_mma | 30,284 |
+| tennis | 10,763 |
+| boxing | 10,738 |
 
 ## Sport confidence
 | conf | rows |
 |---|---|
-| HIGH | 3,303,040 |
-| MEDIUM | 255,441 |
-| LOW | 105,524 |
-| NONE | 14,670 |
+| HIGH | 3,344,468 |
+| MEDIUM | 274,679 |
+| LOW | 130,166 |
+| NONE | 56,919 |
 
 ## Method
 | method | rows |
 |---|---|
-| explicit_signal | 2,160,683 |
-| subject_map | 1,397,798 |
-| category_rule | 586,101 |
-| subject_map_weak | 91,644 |
-| none | 14,670 |
-| brand_lean | 13,880 |
+| explicit_signal | 2,180,103 |
+| subject_map | 1,439,044 |
+| category_rule | 609,366 |
+| subject_map_weak | 112,124 |
+| none | 56,919 |
+| brand_lean | 18,042 |
