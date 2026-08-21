@@ -208,6 +208,8 @@ class SourceHealthTests(unittest.TestCase):
         import ebay_gentle_probe as probe
         self.assertEqual(probe.classify("SORRY Something went wrong on our end", 0), "RED_BLOCKED")
         self.assertEqual(probe.classify("Please verify you are a robot", 0), "RED_CAPTCHA")
+        # 2026-08 challenge wall: HTTP 200, no 'robot' token, 0 items — must NOT read as GREEN/served
+        self.assertEqual(probe.classify("Please verify yourself to continue To keep eBay a safe place", 0), "RED_CAPTCHA")
         self.assertEqual(probe.classify("Shop by category 1,234 results", 60), "GREEN")
         self.assertEqual(probe.classify("0 results did not match any", 0), "AMBER_NO_RESULTS")
 

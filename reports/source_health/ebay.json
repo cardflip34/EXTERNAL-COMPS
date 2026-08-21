@@ -23,11 +23,84 @@
       "at": "2026-08-19T18:16:48+00:00",
       "type": "gate_verified_live",
       "detail": "drain cycle 2026-08-19T18:08:24Z: 5/5 jobs ebay=None; SCP resolving"
+    },
+    {
+      "at": "2026-08-20T00:52:22+00:00",
+      "type": "probe",
+      "detail": "RED_BLOCKED",
+      "http_status": 403,
+      "item_count": 0
+    },
+    {
+      "at": "2026-08-20T00:52:22+00:00",
+      "type": "state_change",
+      "from": "BLOCKED",
+      "to": "BLOCKED",
+      "note": "probe RED_BLOCKED http=403"
+    },
+    {
+      "at": "2026-08-20T00:57:51+00:00",
+      "type": "ip_block_confirmed",
+      "detail": "eBay homepage (not just sold-search) returns 403 'Error Page' from Mini egress 2026-08-20T00:57Z; no Tailscale exit node available. Block is IP-wide \u2192 browser precautions cannot help; egress change required."
+    },
+    {
+      "at": "2026-08-20T01:11:30+00:00",
+      "type": "probe",
+      "detail": "RED_BLOCKED",
+      "http_status": 403,
+      "item_count": 0
+    },
+    {
+      "at": "2026-08-20T01:11:30+00:00",
+      "type": "state_change",
+      "from": "BLOCKED",
+      "to": "BLOCKED",
+      "note": "probe RED_BLOCKED http=403"
+    },
+    {
+      "at": "2026-08-20T01:12:26+00:00",
+      "type": "reboot_no_change",
+      "detail": "Modem reboot 2026-08-20T01:05Z: ISP returned SAME IPv6 /64 (2603:8000:4106:f749) + IPv4 172.116.151.18; eBay 403 over BOTH v4 and v6. Whole home connection blocked; reboot ineffective. Needs separate egress (VPS proxy / ISP re-provision / cellular)."
+    },
+    {
+      "at": "2026-08-20T01:15:39+00:00",
+      "type": "probe",
+      "detail": "RED_BLOCKED",
+      "http_status": 403,
+      "item_count": 0
+    },
+    {
+      "at": "2026-08-20T01:15:39+00:00",
+      "type": "state_change",
+      "from": "BLOCKED",
+      "to": "BLOCKED",
+      "note": "probe RED_BLOCKED http=403"
+    },
+    {
+      "at": "2026-08-21T20:58:40+00:00",
+      "type": "headed_browser_challenge",
+      "detail": "2026-08-20: user-supplied live sold-search link (cards, LH_Sold=1) tested from Mini. Bare client=403 Error Page. HEADED real Chromium (no stealth)=HTTP 200 but 'Please verify yourself to continue' challenge wall, 0 items. Block is a challenge/verification wall on this egress, not a hard IP ban \u2014 served to real browser but gated behind human verification. Detector patched to catch 'verify yourself to continue'."
+    },
+    {
+      "at": "2026-08-21T22:55:48+00:00",
+      "type": "diagnosis_corrected",
+      "detail": "2026-08-21: operator signed in + cleared human verification in a real browser on the SAME home network -> eBay served the sold search normally (HTTP 200, 59 items). Therefore NOT an IP ban: it is bot/automation detection. Unauthenticated+automated = 403/verify wall; authenticated human browser = served. Implication: official API will work from this network; no proxy needed."
     }
   ],
-  "updated_at": "2026-08-19T18:16:48+00:00",
+  "updated_at": "2026-08-21T22:55:48+00:00",
   "state_since": "2026-08-19T18:05:54+00:00",
-  "probe_not_before": "2026-08-22T18:00:00+00:00",
+  "probe_not_before": "2026-08-23T01:15:37+00:00",
   "block_observed_since": "2026-07-01T00:00:00+00:00",
-  "state_note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time."
+  "state_note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time.",
+  "last_probe": {
+    "at": "2026-08-20T01:15:37+00:00",
+    "url": "https://www.ebay.com/sch/i.html?_from=R40&_nkw=shohei+ohtani+card&_sacat=0&LH_Sold=1&LH_Complete=1&_sop=13&_ipg=60",
+    "http_status": 403,
+    "verdict": "RED_BLOCKED",
+    "item_count": 0,
+    "elapsed_s": 2.2,
+    "body_snippet": "SORRY Something went wrong on our end 0.d5f10f17.1787188538.101cf003 Please go back and try again or go to eBay Homepage. Go to homepage Copyright \u00a9 1995-2026 e",
+    "error": null,
+    "host": "Stavross-Mac-mini.local"
+  }
 }

@@ -48,6 +48,8 @@ def _block_signature_vendored(page_text: str):
     t = (page_text or "").lower()
     if "verify" in t and "robot" in t:
         return "captcha"
+    if "verify yourself to continue" in t or "please verify yourself" in t:
+        return "captcha"   # 2026-08 challenge wall: HTTP 200, no 'robot' token
     if ("something went wrong on our end" in t or "error page" in t
             or "access denied" in t or "blocked" in t):
         return "blocked"
