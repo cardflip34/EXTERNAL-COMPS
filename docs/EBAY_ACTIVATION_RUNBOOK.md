@@ -29,22 +29,27 @@ automated hits/day, so resuming automation would re-trigger the wall quickly, no
 The data isn't worth that trade, because we already have most of it (SCP covers sports, TCGplayer covers
 Pokémon/TCG for the current window) — see `SCP_VS_EBAY_COVERAGE_20260819.md`.
 
-## Path A — Terapeak (immediate, free, no code)  ← try this first, you're already signed in
+## Path A — Terapeak — **NOT a viable scrub source** (corrected 2026-08-21)
 
-eBay's own sold-data research tool, included with an eBay **seller** account at no extra cost, in **Seller Hub →
-Research**. Gives sold/completed listing history (materially deeper than the ~90 days the public search shows)
-with filters and CSV export.
+eBay's own sold-data research tool: free with a seller account, **3 years** of sold history, and it shows the
+**real accepted price on Best Offer sales** (which public search hides). Genuinely valuable data.
 
-1. While signed in: **Seller Hub → Research → Terapeak Product Research**
-2. Search e.g. `cards`, set the date range and category, filter to **Sold**
-3. **Export CSV**
+**But it has no bulk export.** Multiple eBay seller-community threads asking how to export Terapeak data to
+CSV/Excel are answered with: you can't. There are also **daily request limits** that sellers report as
+restrictive. The operator's recollection was correct — the export button in Seller Hub is for *your own active
+listings*, not for Terapeak's sold research.
 
-**Why this matters:** a Terapeak CSV export drops straight into the engine we already built — `canonical_writer.py`
-ingests staged rows, dedups on `(item_id, sold_date)`, and writes canonical Parquet. If the export carries item
-ids, dates and prices, we get the historical archive **today**, legitimately, with zero scraping. Tell me the
-column headers of an export and I'll have the ingester ready.
+**Verdict: Terapeak is a human lookup tool, not a data pipeline.** It is excellent for pricing one card by hand.
+It cannot feed a comps database of millions of rows. Getting 3 years of data out of it would mean either manual
+copy/paste (absurd at our scale) or scraping the Terapeak UI — which is the same ToS problem as before, made
+worse because it sits behind an authenticated account.
 
-*Check eligibility in Seller Hub — availability/limits depend on account type and can change.*
+**Do not build the acquisition engine on Terapeak.** Use it manually when you personally want to sanity-check a
+card's value — particularly a Best-Offer sale, where it's the only place the true price is visible.
+
+*Open question worth 5 minutes of eyeballs: does Terapeak show INDIVIDUAL listings (with item numbers) or only
+aggregated product-level stats (avg price, sell-through)? If aggregate-only, it is doubly unusable for a comps
+store, which needs one row per sale.*
 
 ## Path B — Marketplace Insights API (the durable, programmatic fix)
 
