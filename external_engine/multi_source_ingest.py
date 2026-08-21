@@ -86,6 +86,89 @@ SPECS = {
     },
 }
 
+# SCP broad is special: JSONL (not an array), 8M+ rows, and a nested `raw` struct carrying the underlying
+# eBay item id (`ledger_anchor` = 'ebay-<itemid>'), the grade label, and the best-offer flag. Handled by its
+# own function rather than the generic SPEC path.
+SCP_JSONL = os.path.expanduser("~/mazi_scp_broad/scp_broad_comps.jsonl")
+SCP_COLUMNS = ("{'catalog_id':'VARCHAR','source_item_id':'VARCHAR','title':'VARCHAR','sold_price':'VARCHAR',"
+               "'sold_date':'VARCHAR','source_url':'VARCHAR','image_url':'VARCHAR','slug':'VARCHAR',"
+               "'raw':'STRUCT(source VARCHAR, slug VARCHAR, ledger_anchor VARCHAR, grade_label VARCHAR, "
+               "image_url VARCHAR, scp_original_title VARCHAR, \"soldDate\" VARCHAR, best_offer VARCHAR, broad_scrub VARCHAR)'}")
+
+
+def ingest_scp_broad(con, out: str, dry_run: bool, jsonl: str = SCP_JSONL, limit: int | None = None) -> dict:
+    """Canonicalize the SCP broad scrub JSONL (sports historical archive) into source=sportscardspro.
+
+    Keeps SCP as its own source/partition (provenance preserved, originals untouched) but extracts
+    `ebay_item_id` from raw.ledger_anchor so cross-source overlap with the eBay partition is MEASURABLE —
+    the merge policy is then an evidence-based decision, not a guess."""
+    if not os.path.exists(jsonl):
+        return {"source": "scp_broad", "skipped": "file_absent", "path": jsonl}
+    t0 = time.time()
+    lim = f" LIMIT {limit}" if limit else ""
+    price = "TRY_CAST(regexp_extract(regexp_replace(COALESCE(sold_price,''),'[$,\\s]','','g'),'-?[0-9]+(\\.[0-9]+)?',0) AS DOUBLE)"
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE scp_norm AS
+        SELECT 'SCP:' || source_item_id                                        AS observation_id,
+               source_item_id,
+               title,
+               {price}                                                          AS sold_price_usd,
+               TRY_CAST(substr(COALESCE(sold_date,''),1,10) AS DATE)            AS sold_date,
+               source_url, image_url, slug,
+               NULLIF(regexp_extract(COALESCE(raw.ledger_anchor,''),'ebay-([0-9]+)',1),'') AS ebay_item_id,
+               NULLIF(raw.grade_label,'')                                       AS grade_label,
+               CASE lower(COALESCE(raw.best_offer,'')) WHEN 'true' THEN TRUE WHEN 'false' THEN FALSE END AS best_offer,
+               row_number() OVER ()                                             AS src_row
+        FROM read_json('{jsonl}', format='newline_delimited', records=true, columns={SCP_COLUMNS},
+                       maximum_object_size=33554432, ignore_errors=true){lim}""")
+    seen = con.execute("SELECT count(*) FROM scp_norm").fetchone()[0]
+    con.execute("""CREATE OR REPLACE TEMP TABLE scp_dedup AS
+        SELECT * EXCLUDE (rn) FROM (
+          SELECT *, row_number() OVER (PARTITION BY observation_id, sold_date
+                    ORDER BY (sold_price_usd IS NULL), src_row) rn FROM scp_norm
+          WHERE source_item_id IS NOT NULL) WHERE rn=1""")
+    rows = con.execute("SELECT count(*) FROM scp_dedup").fetchone()[0]
+    gate = cm.VALUATION_GATE_SQL.replace("{p}.best_offer", "COALESCE(best_offer,FALSE)").replace("{p}.", "")
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE scp_canon AS
+        SELECT observation_id || ':' || COALESCE(CAST(sold_date AS VARCHAR),'nodate') AS observation_key,
+               observation_id, 'sportscardspro' AS source, source_item_id, title, sold_price_usd,
+               'USD' AS currency, COALESCE(best_offer,FALSE) AS best_offer, sold_date,
+               NULL::TIMESTAMP AS captured_at, NULL AS shipping_text, NULL AS bids_text, NULL AS condition,
+               CASE WHEN grade_label IS NULL THEN NULL
+                    WHEN regexp_matches(lower(title),'\\\\bpsa\\\\b') THEN 'PSA'
+                    WHEN regexp_matches(lower(title),'\\\\bbgs\\\\b') THEN 'BGS'
+                    WHEN regexp_matches(lower(title),'\\\\bsgc\\\\b') THEN 'SGC'
+                    WHEN regexp_matches(lower(title),'\\\\bcgc\\\\b') THEN 'CGC' ELSE 'UNKNOWN' END AS grade_company,
+               grade_label AS grade,
+               CASE WHEN grade_label IS NOT NULL THEN 'graded' ELSE 'raw_or_unknown' END AS raw_or_graded,
+               source_url, image_url, slug AS primary_subject_query,
+               1::BIGINT AS n_observations, NULL::TIMESTAMP AS first_seen_at, NULL::TIMESTAMP AS last_seen_at,
+               ['sportscardspro'] AS discovery_sources,
+               CASE WHEN slug IS NULL THEN [] ELSE [slug] END AS queries_seen,
+               [] AS legacy_comp_ids,
+               FALSE AS price_conflict, FALSE AS date_conflict, FALSE AS image_conflict,
+               ({gate}) AS valuation_gate,
+               NULL::DOUBLE AS premium_pct, NULL::DOUBLE AS premium_abs,
+               ebay_item_id,
+               'scp_broad_comps.jsonl' AS chosen_src_file, src_row AS chosen_src_row,
+               '{NORMALIZER_VERSION}' AS normalizer_version,
+               COALESCE(year(sold_date),0) AS year, COALESCE(month(sold_date),0) AS month
+        FROM scp_dedup""")
+    priced = con.execute("SELECT count(*) FROM scp_canon WHERE sold_price_usd IS NOT NULL").fetchone()[0]
+    with_ebay_id = con.execute("SELECT count(*) FROM scp_canon WHERE ebay_item_id IS NOT NULL").fetchone()[0]
+    span = con.execute("SELECT min(sold_date), max(sold_date) FROM scp_canon").fetchone()
+    part = os.path.join(out, "parquet", "source=sportscardspro")
+    if not dry_run:
+        import shutil
+        if os.path.isdir(part):
+            shutil.rmtree(part)
+        os.makedirs(part, exist_ok=True)
+        con.execute(f"""COPY scp_canon TO '{part}' (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (year, month),
+                        OVERWRITE_OR_IGNORE true, ROW_GROUP_SIZE 100000)""")
+    return {"source": "scp_broad", "rows_seen": seen, "rows_canonical": rows, "priced": priced,
+            "with_ebay_item_id": with_ebay_id, "sold_date_min": str(span[0]), "sold_date_max": str(span[1]),
+            "partition": part, "seconds": round(time.time()-t0, 1), "dry_run": dry_run}
+
+
 DATE_SQL = """COALESCE(
     TRY_CAST(TRY_STRPTIME(regexp_replace(COALESCE({d},''), '^(Sold|Ended)\\s+', ''), '%b %d, %Y') AS DATE),
     TRY_CAST(TRY_STRPTIME(regexp_replace(COALESCE({d},''), '^(Sold|Ended)\\s+', ''), '%B %d, %Y') AS DATE),
@@ -167,12 +250,15 @@ def main():
     ap.add_argument("--only", default=None, help="comma list of sources (default all)")
     ap.add_argument("--store", default=STORE); ap.add_argument("--memory-limit", default="800MB")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--limit", type=int, default=None, help="rows (scp smoke test)")
     a = ap.parse_args()
     out = os.path.join(a.store, "external_store")
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{a.memory_limit}'; SET threads=1; SET temp_directory='{os.path.join(out,'duckdb_tmp')}'")
-    keys = a.only.split(",") if a.only else list(SPECS)
+    keys = a.only.split(",") if a.only else list(SPECS) + ["scp_broad"]
     results = [ingest_source(con, k, SPECS[k], out, a.dry_run) for k in keys if k in SPECS]
+    if "scp_broad" in keys:
+        results.append(ingest_scp_broad(con, out, a.dry_run, limit=a.limit))
     con.close()
     report = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "normalizer_version": NORMALIZER_VERSION,
               "dry_run": a.dry_run, "results": results}
