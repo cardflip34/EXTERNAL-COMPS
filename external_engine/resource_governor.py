@@ -23,8 +23,13 @@ from datetime import datetime, timezone
 STORE_VOLUME = "/Volumes/MAZI_EVIDENCE_6TB"
 THRESHOLDS = {
     # free RAM GB (inactive+free+speculative counted as reclaimable), swap used GB, 1-min load, disk free GB, browsers
-    "yellow": {"free_gb_lt": 2.0, "swap_used_gb_ge": 1.2, "load1_ge": 16.0, "disk_free_gb_lt": 100.0, "browsers_ge": 6},
-    "red":    {"free_gb_lt": 0.75, "swap_used_gb_ge": 1.8, "load1_ge": 40.0, "disk_free_gb_lt": 25.0, "browsers_ge": 12},
+    "yellow": {"free_gb_lt": 2.0, "swap_used_gb_ge": 2.0, "load1_ge": 16.0, "disk_free_gb_lt": 100.0, "browsers_ge": 6},
+    # NOTE (2026-09-04): swap_used deliberately has NO red threshold. On macOS swap accumulates over uptime
+    # and is rarely reclaimed, so it does not indicate current pressure: observed 2.03 GB swap on an 11-day
+    # uptime while the kernel reported pressure_level=1 (normal) and 69% memory free. That false RED had
+    # already skipped the SCP stall-watchdog 179 times — disabling the safety net over a cosmetic number.
+    # The authoritative signal is kern.memorystatus_vm_pressure_level (1 normal / 2 warning / 4 critical).
+    "red":    {"free_gb_lt": 0.75, "swap_used_gb_ge": None, "load1_ge": 40.0, "disk_free_gb_lt": 25.0, "browsers_ge": 12},
 }
 
 
@@ -71,6 +76,17 @@ def _browser_count() -> int:
     return n
 
 
+def _mem_pressure_level() -> int:
+    """kern.memorystatus_vm_pressure_level: 1=normal, 2=warning, 4=critical. The kernel's own verdict on
+    memory pressure — far more reliable than swap-used, which only reflects lifetime accumulation."""
+    out = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                         capture_output=True, text=True).stdout.strip()
+    try:
+        return int(out)
+    except ValueError:
+        return 1
+
+
 def _disk_free_gb(path: str) -> float | None:
     try:
         st = os.statvfs(path)
@@ -96,6 +112,7 @@ def sample() -> dict:
         "disk_store_free_gb": _disk_free_gb(STORE_VOLUME),
         "store_mounted": os.path.ismount(STORE_VOLUME),
         "browser_procs": _browser_count(),
+        "mem_pressure_level": _mem_pressure_level(),
     }
     return s
 
@@ -109,9 +126,12 @@ def classify(s: dict) -> tuple[str, list[str]]:
     r, y = THRESHOLDS["red"], THRESHOLDS["yellow"]
     if not s["store_mounted"]:
         return "RED", ["store volume not mounted"]
+    press = s.get("mem_pressure_level", 1)
+    swap_red = r["swap_used_gb_ge"] is not None and s["swap_used_gb"] >= r["swap_used_gb_ge"]
     checks = [
+        ("mem_pressure", press >= 4, press >= 2, f"kernel memory pressure level {press}"),
         ("ram_reclaimable_gb", ram < r["free_gb_lt"], ram < y["free_gb_lt"], f"reclaimable RAM {ram:.2f} GB"),
-        ("swap_used_gb", s["swap_used_gb"] >= r["swap_used_gb_ge"], s["swap_used_gb"] >= y["swap_used_gb_ge"], f"swap used {s['swap_used_gb']:.2f} GB"),
+        ("swap_used_gb", swap_red, s["swap_used_gb"] >= y["swap_used_gb_ge"], f"swap used {s['swap_used_gb']:.2f} GB (informational on macOS)"),
         ("load1", s["load1"] >= r["load1_ge"], s["load1"] >= y["load1_ge"], f"load1 {s['load1']}"),
         ("disk_store_free_gb", disk < r["disk_free_gb_lt"], disk < y["disk_free_gb_lt"], f"store disk free {disk} GB"),
         ("browser_procs", s["browser_procs"] >= r["browsers_ge"], s["browser_procs"] >= y["browsers_ge"], f"browser procs {s['browser_procs']}"),
@@ -137,8 +157,8 @@ def main():
         print(json.dumps(s, indent=2))
     else:
         print(f"{level}  " + "; ".join(reasons) if reasons else f"{level}  (all clear)")
-        print(f"  RAM reclaimable {s['ram_reclaimable_gb']} GB (free {s['ram_free_gb']}), swap {s['swap_used_gb']} GB, "
-              f"load1 {s['load1']}, store free {s['disk_store_free_gb']} GB, browsers {s['browser_procs']}")
+        print(f"  RAM reclaimable {s['ram_reclaimable_gb']} GB (free {s['ram_free_gb']}), pressure_level {s['mem_pressure_level']}, "
+              f"swap {s['swap_used_gb']} GB, load1 {s['load1']}, store free {s['disk_store_free_gb']} GB, browsers {s['browser_procs']}")
     sys.exit({"GREEN": 0, "YELLOW": 1, "RED": 2}[level])
 
 

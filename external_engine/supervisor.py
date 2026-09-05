@@ -38,7 +38,7 @@ TICK_S = 60
 HEARTBEAT_MIN = 20
 PROBE_MIN_GAP_H = 72
 LOCK_PATH = os.path.expanduser("~/mazi_local_evidence/extcomps_supervisor.lock")
-VERSION = "0.3.0"
+VERSION = "0.5.0"
 LOGDIR = os.path.expanduser("~/Library/Logs/mazi_external_comps")
 
 # Managed lanes (PRD §46/§49): long-running children the supervisor keeps alive, gated by the resource governor.
@@ -63,10 +63,32 @@ LEVEL_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
 # reboot because its launchd agent wasn't loaded — this prevents a repeat without depending on launchd bootstrap).
 HEALERS = [
     {
+        "name": "canonical_refresh",  # keeps external_market_canonical_v1 tracking the live scrubs
+        # Added 2026-08-25: canonicalization was manual and had drifted 4 days / ~2.4M rows behind the
+        # scrapers (scrapers healthy, store stale — a silent freshness failure). The script is idempotent
+        # and self-rate-limited (>=6h between rebuilds), so running it often is harmless.
+        "cmd": ["/bin/bash", os.path.join(ROOT, "ops/canonical_refresh.sh")],
+        "every_ticks": 60,              # check hourly; the script itself enforces the 6h floor
+        "max_level": "YELLOW",          # never rebuild under RED — it is a heavy DuckDB job
+        # DETACHED: this job runs ~40+ min. Waiting on it inside the tick would block the supervisor,
+        # and the old 120 s _run() timeout SIGKILLed bash mid-run — the orphaned python finished the
+        # ingest, but the classifier, the success stamp and the lock cleanup never ran, so it silently
+        # re-fired every hour (observed 2026-08-31). Fire-and-forget is correct: the script owns its
+        # own single-instance lock and 6 h rate limit.
+        "detach": True,
+        "enabled": os.environ.get("EXTCOMPS_HEALER_CANONICAL", "1") == "1"
+                   and os.path.exists(os.path.join(ROOT, "ops/canonical_refresh.sh")),
+    },
+    {
         "name": "scp_broad_watchdog",   # revives run_scp_broad.sh (Jina→SCP, self-throttling) + its Neon bridge
         "cmd": ["/bin/bash", os.path.expanduser("~/mazi_scp_broad/scp_broad_watchdog.sh")],
         "every_ticks": 5,               # ~5 min at TICK_S=60, matching the original launchd StartInterval
-        "max_level": "YELLOW",
+        "max_level": "RED",
+        # ALWAYS RUN (2026-09-04): this is the SAFETY net (kills a wedged scrubber, revives a dead bridge),
+        # not a workload — it costs milliseconds. Gating it on resource level meant a false RED skipped it
+        # 179 consecutive times, i.e. the stall detector was disabled exactly when the box looked unhealthy.
+        # A watchdog that switches itself off under load is worse than no watchdog.
+        "always_run": True,
         "enabled": os.environ.get("EXTCOMPS_HEALER_SCP_BROAD", "1") == "1" and os.path.exists(os.path.expanduser("~/mazi_scp_broad/scp_broad_watchdog.sh")),
     },
 ]
@@ -206,11 +228,22 @@ def run_healers(state: dict, level: str, tick: int) -> None:
         st = hs.setdefault(h["name"], {"runs": 0})
         if not h["enabled"]:
             st["status"] = "disabled"; continue
-        if LEVEL_RANK[level] > LEVEL_RANK[h["max_level"]]:
+        if not h.get("always_run") and LEVEL_RANK[level] > LEVEL_RANK[h["max_level"]]:
             st["status"] = f"skipped_resource_{level}"; continue
         if tick % h["every_ticks"] != 0:
             continue
-        rc, out = _run(h["cmd"], timeout=120)
+        if h.get("detach"):
+            # long-running: launch detached, never wait (script self-locks + self-rate-limits)
+            logf_path = os.path.join(LOGDIR, f"{h['name']}.out")
+            os.makedirs(LOGDIR, exist_ok=True)
+            with open(logf_path, "a") as logf:
+                subprocess.Popen(h["cmd"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+            st["runs"] += 1; st["last_run"] = _now().isoformat(timespec="seconds")
+            st["status"] = "launched_detached"
+            _log(f"healer {h['name']}: launched detached")
+            continue
+        rc, out = _run(h["cmd"], timeout=h.get("timeout", 120))
         st["runs"] += 1; st["last_run"] = _now().isoformat(timespec="seconds"); st["last_rc"] = rc
         st["status"] = "ran"
         _log(f"healer {h['name']}: rc={rc}")
