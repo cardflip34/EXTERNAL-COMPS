@@ -169,6 +169,80 @@ def ingest_scp_broad(con, out: str, dry_run: bool, jsonl: str = SCP_JSONL, limit
             "partition": part, "seconds": round(time.time()-t0, 1), "dry_run": dry_run}
 
 
+
+# Fanatics moved to Neon-export staging 2026-09-06: the live v3 pipeline writes Neon only, so the legacy
+# fanatics_comps.json froze at Jun 22 and canonical lagged 76 days (caught by freshness_report's first run).
+# Ingest = staging JSONL (Neon superset, incremental via neon_source_export.py) ∪ legacy JSON (tiny; keeps any
+# row that never bridged), dedup by (observation_id, sold_date), OVERWRITE the fanatics partition.
+FAN_STAGING = os.path.join(STORE, "external_store", "staging", "fanatics_neon.jsonl")
+FAN_COLS = ("{'comp_id':'VARCHAR','title':'VARCHAR','sold_price':'VARCHAR','sold_date':'VARCHAR','url':'VARCHAR',"
+            "'image_url':'VARCHAR','grade':'VARCHAR','grader':'VARCHAR','best_offer':'VARCHAR',"
+            "'buyers_premium':'VARCHAR','scraped_at':'VARCHAR'}")
+
+
+def ingest_fanatics_neon(con, out: str, dry_run: bool) -> dict:
+    if not os.path.exists(FAN_STAGING):
+        return {"source": "fanatics_neon", "skipped": "staging_absent (run neon_source_export.py)", "path": FAN_STAGING}
+    t0 = time.time()
+    legacy = os.path.join(PROJECT, "fanatics_comps.json")
+    spec_legacy = SPECS["fanatics"]
+    lcols = ", ".join(f"'{k}': '{v}'" for k, v in spec_legacy["cols"].items())
+    price = "TRY_CAST(regexp_extract(regexp_replace(COALESCE(sold_price,''),'[$,\\s]','','g'),'-?[0-9]+(\\.[0-9]+)?',0) AS DOUBLE)"
+    date_l = DATE_SQL.format(d="sold_date")
+    parts = [f"""
+        SELECT COALESCE(NULLIF(comp_id,''), sha1(url)) AS rid, title, {price} AS sold_price_usd, {date_l} AS sold_date,
+               url AS source_url, image_url, NULLIF(grade,'') AS grade, NULLIF(grader,'') AS grade_company,
+               CASE lower(COALESCE(best_offer,'')) WHEN 'true' THEN TRUE ELSE FALSE END AS best_offer,
+               TRY_CAST(scraped_at AS TIMESTAMP) AS captured_at, 'neon' AS src_file, row_number() OVER () AS src_row
+        FROM read_json('{FAN_STAGING}', format='newline_delimited', records=true, columns={FAN_COLS},
+                       maximum_object_size=33554432, ignore_errors=true)"""]
+    if os.path.exists(legacy):
+        parts.append(f"""
+        SELECT COALESCE(NULLIF(comp_id,''), sha1(url)) AS rid, title, {price} AS sold_price_usd, {date_l} AS sold_date,
+               url AS source_url, image_url, NULL AS grade, NULL AS grade_company, FALSE AS best_offer,
+               TRY_CAST(scraped_at AS TIMESTAMP) AS captured_at, 'legacy_json' AS src_file,
+               1000000000 + row_number() OVER () AS src_row
+        FROM read_json('{legacy}', format='array', records=true, columns={{{lcols}}}, maximum_object_size=33554432)""")
+    con.execute("CREATE OR REPLACE TEMP TABLE fan_norm AS " + " UNION ALL ".join(parts))
+    seen = con.execute("SELECT count(*) FROM fan_norm").fetchone()[0]
+    con.execute("""CREATE OR REPLACE TEMP TABLE fan_dedup AS
+        SELECT * EXCLUDE (rn) FROM (
+          SELECT *, row_number() OVER (PARTITION BY rid, sold_date
+                    ORDER BY (grade IS NULL), (sold_price_usd IS NULL), src_row) rn
+          FROM fan_norm WHERE rid IS NOT NULL) WHERE rn=1""")
+    rows = con.execute("SELECT count(*) FROM fan_dedup").fetchone()[0]
+    gate = cm.VALUATION_GATE_SQL.replace("{p}.best_offer", "best_offer").replace("{p}.", "")
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE fan_canon AS
+        SELECT 'FANATICS:' || rid || ':' || COALESCE(CAST(sold_date AS VARCHAR),'nodate') AS observation_key,
+               'FANATICS:' || rid AS observation_id, 'fanatics' AS source, rid AS source_item_id, title,
+               sold_price_usd, 'USD' AS currency, best_offer, sold_date, captured_at,
+               NULL AS shipping_text, NULL AS bids_text, NULL AS condition,
+               grade_company, grade,
+               CASE WHEN grade IS NOT NULL THEN 'graded' ELSE 'raw_or_unknown' END AS raw_or_graded,
+               source_url, image_url, NULL AS primary_subject_query,
+               1::BIGINT AS n_observations, captured_at AS first_seen_at, captured_at AS last_seen_at,
+               ['fanatics'] AS discovery_sources, [] AS queries_seen, [] AS legacy_comp_ids,
+               FALSE AS price_conflict, FALSE AS date_conflict, FALSE AS image_conflict,
+               ({gate}) AS valuation_gate, NULL::DOUBLE AS premium_pct, NULL::DOUBLE AS premium_abs,
+               src_file AS chosen_src_file, src_row AS chosen_src_row,
+               '{NORMALIZER_VERSION}' AS normalizer_version,
+               COALESCE(year(sold_date),0) AS year, COALESCE(month(sold_date),0) AS month
+        FROM fan_dedup""")
+    priced = con.execute("SELECT count(*) FROM fan_canon WHERE sold_price_usd IS NOT NULL").fetchone()[0]
+    span = con.execute("SELECT min(sold_date), max(sold_date) FROM fan_canon").fetchone()
+    part = os.path.join(out, "parquet", "source=fanatics")
+    if not dry_run:
+        import shutil
+        if os.path.isdir(part):
+            shutil.rmtree(part)
+        os.makedirs(part, exist_ok=True)
+        con.execute(f"""COPY fan_canon TO '{part}' (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (year, month),
+                        OVERWRITE_OR_IGNORE true, ROW_GROUP_SIZE 100000)""")
+    return {"source": "fanatics_neon", "rows_seen": seen, "rows_canonical": rows, "priced": priced,
+            "sold_date_min": str(span[0]), "sold_date_max": str(span[1]), "partition": part,
+            "seconds": round(time.time()-t0, 1), "dry_run": dry_run}
+
+
 DATE_SQL = """COALESCE(
     TRY_CAST(TRY_STRPTIME(regexp_replace(COALESCE({d},''), '^(Sold|Ended)\\s+', ''), '%b %d, %Y') AS DATE),
     TRY_CAST(TRY_STRPTIME(regexp_replace(COALESCE({d},''), '^(Sold|Ended)\\s+', ''), '%B %d, %Y') AS DATE),
@@ -255,10 +329,13 @@ def main():
     out = os.path.join(a.store, "external_store")
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{a.memory_limit}'; SET threads=1; SET temp_directory='{os.path.join(out,'duckdb_tmp')}'")
-    keys = a.only.split(",") if a.only else list(SPECS) + ["scp_broad"]
+    default_keys = [k for k in SPECS if k != "fanatics"] + ["scp_broad", "fanatics_neon"]
+    keys = a.only.split(",") if a.only else default_keys
     results = [ingest_source(con, k, SPECS[k], out, a.dry_run) for k in keys if k in SPECS]
     if "scp_broad" in keys:
         results.append(ingest_scp_broad(con, out, a.dry_run, limit=a.limit))
+    if "fanatics_neon" in keys:
+        results.append(ingest_fanatics_neon(con, out, a.dry_run))
     con.close()
     report = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "normalizer_version": NORMALIZER_VERSION,
               "dry_run": a.dry_run, "results": results}
