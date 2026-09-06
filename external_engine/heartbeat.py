@@ -74,6 +74,16 @@ def build() -> dict:
             if f.endswith(".parquet"):
                 m = os.path.getmtime(os.path.join(root, f))
                 canon_newest = m if canon_newest is None or m > canon_newest else canon_newest
+    # freshness-lag artifact (written by the 6-hourly canonical refresh via freshness_report.py;
+    # heartbeat only READS it so the 20-min loop stays cheap)
+    fresh = {}
+    fresh_path = os.path.join(STORE, "external_store", "freshness", "freshness_latest.json")
+    try:
+        with open(fresh_path) as f:
+            fresh = json.load(f)
+        fresh["artifact_age_h"] = round((time.time() - os.path.getmtime(fresh_path)) / 3600, 1)
+    except (OSError, ValueError):
+        fresh = {"error": "freshness artifact missing/unreadable"}
     hb = {
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "host": os.uname().nodename,
@@ -82,6 +92,9 @@ def build() -> dict:
                              "last_probe": (ebay.get("last_probe") or {}).get("verdict")}},
         "processes": {name: _pgrep(pat) for name, pat in EXPECTED_PROCS.items()},
         "launchd": {lbl: _launchd(lbl) for lbl in LAUNCHD_LABELS},
+        "freshness": {"per_source": {k: f"{v.get('lag_days')}d/{v.get('status')}" for k, v in (fresh.get("sources") or {}).items()},
+                      "alerts": fresh.get("alerts", []), "artifact_age_h": fresh.get("artifact_age_h"),
+                      "error": fresh.get("error")},
         "store": {"legacy_json_newest_write_h_ago": _hours_since(_newest_mtime(store_files)),
                   "canonical_parquet_newest_write_h_ago": _hours_since(canon_newest)},
     }
@@ -103,8 +116,15 @@ def build() -> dict:
             crit.append(f"no store write for {newest_h:.0f} h (freshness CRIT > {FRESHNESS_CRIT_H} h)")
         elif newest_h > FRESHNESS_WARN_H:
             warn.append(f"no store write for {newest_h:.0f} h")
+    for al in (fresh.get("alerts") or []):
+        warn.append(f"freshness: {al}")
+    if fresh.get("error"):
+        warn.append(f"freshness artifact: {fresh['error']}")
+    elif (fresh.get("artifact_age_h") or 0) > 8:
+        warn.append(f"freshness artifact stale ({fresh['artifact_age_h']} h old — canonical refresh may be failing)")
     for lbl, d in hb["launchd"].items():
-        if d.get("loaded") and d.get("last_exit_code") not in (None, "0", "0 (never exited)"):
+        lec = d.get("last_exit_code") or ""
+        if d.get("loaded") and lec not in (None, "", "0") and "never exited" not in lec:
             warn.append(f"{lbl} last exit {d.get('last_exit_code')}")
     hb["verdict"] = "CRIT" if crit else ("WARN" if warn else "OK")
     hb["crit"] = crit; hb["warn"] = warn
