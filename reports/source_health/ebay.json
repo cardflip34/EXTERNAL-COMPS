@@ -152,22 +152,36 @@
       "at": "2026-09-05T12:41:02+00:00",
       "type": "probe_inconclusive",
       "detail": "AMBER_NAV_ERROR"
+    },
+    {
+      "at": "2026-09-08T12:41:56+00:00",
+      "type": "probe",
+      "detail": "RED_CAPTCHA",
+      "http_status": 200,
+      "item_count": 0
+    },
+    {
+      "at": "2026-09-08T12:41:58+00:00",
+      "type": "state_change",
+      "from": "BLOCKED",
+      "to": "BLOCKED",
+      "note": "probe RED_CAPTCHA http=200"
     }
   ],
-  "updated_at": "2026-09-05T12:41:02+00:00",
+  "updated_at": "2026-09-08T12:41:58+00:00",
   "state_since": "2026-08-19T18:05:54+00:00",
-  "probe_not_before": "2026-09-05T12:40:55+00:00",
+  "probe_not_before": "2026-09-11T12:41:44+00:00",
   "block_observed_since": "2026-07-01T00:00:00+00:00",
   "state_note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time.",
   "last_probe": {
-    "at": "2026-09-05T12:41:00+00:00",
+    "at": "2026-09-08T12:41:44+00:00",
     "url": "https://www.ebay.com/sch/i.html?_from=R40&_nkw=shohei+ohtani+card&_sacat=0&LH_Sold=1&LH_Complete=1&_sop=13&_ipg=60",
-    "http_status": null,
-    "verdict": "AMBER_NAV_ERROR",
+    "http_status": 200,
+    "verdict": "RED_CAPTCHA",
     "item_count": 0,
-    "elapsed_s": 0.5,
-    "body_snippet": "",
-    "error": "Error: Page.goto: net::ERR_INTERNET_DISCONNECTED at https://www.ebay.com/sch/i.html?_from=R40&_nkw=shohei+ohtani+card&_sacat=0&LH_Sold=1&LH_Complete=1&_sop=13&_ipg=60\nCall log:\n  - navigating to \"https://www",
+    "elapsed_s": 11.7,
+    "body_snippet": "Skip to main content Please verify yourself to continue To keep eBay a safe place to buy and sell, we will occasionally ask you to verify yourself. This helps u",
+    "error": null,
     "host": "Stavross-Mac-mini.local"
   }
 }
