@@ -61,7 +61,10 @@ SPECS = {
                  "sold_date": "VARCHAR", "url": "VARCHAR", "set_name": "VARCHAR", "number": "VARCHAR",
                  "rarity": "VARCHAR", "product_id": "VARCHAR", "variant": "VARCHAR", "condition": "VARCHAR"},
         "id": "COALESCE(NULLIF(comp_id,''), NULLIF(product_id,'') || '-' || NULLIF(sold_date,''), sha1(url))",
-        "image": "NULL", "premium_pct": "NULL", "shipping": "shipping", "subject": "set_name", "condition": "condition",
+        # product-image URL synthesized from product_id — TCGplayer's CDN pattern, verified live 2026-09-10
+        # (the sold-order scraper never captured per-order images; the product stock photo is the right visual)
+        "image": "CASE WHEN NULLIF(product_id,'') IS NOT NULL THEN 'https://product-images.tcgplayer.com/fit-in/400x400/' || product_id || '.jpg' END",
+        "premium_pct": "NULL", "shipping": "shipping", "subject": "set_name", "condition": "condition",
     },
     "myslabs": {
         "file": "myslabs_comps.json", "prefix": "MYSLABS", "label": "myslabs",

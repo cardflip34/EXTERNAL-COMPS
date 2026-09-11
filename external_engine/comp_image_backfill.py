@@ -23,7 +23,8 @@ import argparse, collections, csv, json, os, queue, sys, threading, time, urllib
 BASE = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"
 W = os.path.join(BASE, "_backfill")
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
-SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv", "scp_catalog": "candidates_scp_catalog.csv"}
+SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv", "scp_catalog": "candidates_scp_catalog.csv",
+           "tcgplayer_catalog": "candidates_tcgplayer_catalog.csv"}
 WORKERS = 6
 
 def ext_of(url: str) -> str:
@@ -35,8 +36,8 @@ def ext_of(url: str) -> str:
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
 
-def run_source(source: str, rate: float, limit: int | None) -> int:
-    cand = os.path.join(W, SOURCES[source])
+def run_source(source: str, rate: float, limit: int | None, candidates: str | None = None) -> int:
+    cand = candidates or os.path.join(W, SOURCES[source])
     outdir = os.path.join(BASE, "ebay" if source == "ebay" else source)
     os.makedirs(outdir, exist_ok=True)
     ledger = open(os.path.join(W, f"ledger_{source}.jsonl"), "a")
@@ -110,11 +111,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=list(SOURCES)); ap.add_argument("--all", action="store_true")
     ap.add_argument("--rate", type=float, default=6.0); ap.add_argument("--limit", type=int)
+    ap.add_argument("--candidates", help="override candidates csv (delta syncs)")
     a = ap.parse_args()
     order = list(SOURCES) if a.all else [a.source]
     if not order or order == [None]: ap.error("--source or --all required")
     for s in order:
-        rc = run_source(s, a.rate, a.limit)
+        rc = run_source(s, a.rate, a.limit, a.candidates)
         if rc: sys.exit(rc)
 
 if __name__ == "__main__":
