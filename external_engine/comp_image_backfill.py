@@ -25,7 +25,10 @@ W = os.path.join(BASE, "_backfill")
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
 SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv", "scp_catalog": "candidates_scp_catalog.csv",
            "tcgplayer_catalog": "candidates_tcgplayer_catalog.csv"}
-WORKERS = 6
+# 30 workers, NOT a politeness change: the 6 req/s cap below is unchanged. Measured 2026-09-10 — with 6
+# workers each blocking ~5 s on a ~434 KB image, throughput was 1.19 req/s, i.e. only 20% of the budget we
+# already set. Worker count must exceed rate*latency to actually reach the cap; the limiter still enforces 6/s.
+WORKERS = 30
 
 def ext_of(url: str) -> str:
     p = url.split("?")[0].lower()
