@@ -111,6 +111,9 @@ AGG_DUP_SQL = """
 
 # Stage 4 — assemble canonical: winning row + counts + (dup lists or trivial single-row lists)
 VALUATION_GATE_SQL = """CASE
+           WHEN {p}.title IS NULL OR lower(trim({p}.title)) IN
+                ('sell one like this','shop on ebay','sell now','see all details',
+                 'opens in a new window or tab') THEN 'not_a_listing'
            WHEN {p}.sold_price_usd IS NULL OR {p}.sold_price_usd <= 0 THEN 'no_price'
            WHEN regexp_matches(lower({p}.title), '\\b(u pick|you pick|pick your|choose your|pick from|your choice|u-pick|upick)\\b') THEN 'ambiguous_pick'
            WHEN regexp_matches(lower({p}.title), '\\b(lot|lots|bundle|collection|packs?|box|boxes|sealed|mystery|repacks?|supplies|wrappers?|checklist)\\b') THEN 'lot_bundle'

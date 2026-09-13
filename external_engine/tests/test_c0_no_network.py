@@ -126,6 +126,19 @@ class CanonicalTests(unittest.TestCase):
         g = dict(con.execute("SELECT source_item_id, valuation_gate FROM canonical_t").fetchall())
         self.assertEqual(g, {"1": "ok", "2": "obo", "3": "ambiguous_pick", "4": "lot_bundle", "5": "no_price"})
 
+    def test_valuation_gate_rejects_ui_chrome(self):
+        """Regression: 3,693 eBay canonical rows had page furniture ('Sell one like this') as their
+        title — the scraper captured a button, not a listing. Priced and dated, so every other gate
+        passed them as 'ok'. Exact-match only: real card titles must never be caught by this."""
+        con = self._load([_v1(1, title="Sell one like this"), _v1(2, title="  SHOP ON EBAY  "),
+                          _v1(3, title="2023 Prizm Wembanyama Silver PSA 10"),
+                          _v1(4, title="Sell one like this 2021 Bowman Chrome Auto")])
+        g = dict(con.execute("SELECT source_item_id, valuation_gate FROM canonical_t").fetchall())
+        self.assertEqual(g["1"], "not_a_listing")
+        self.assertEqual(g["2"], "not_a_listing")  # case/whitespace insensitive
+        self.assertEqual(g["3"], "ok")             # real card untouched
+        self.assertEqual(g["4"], "ok")             # substring is NOT enough — only the whole title counts
+
     def test_raw_parquet_roundtrip_keeps_discovery_source(self):
         """Regression: a raw Parquet path containing 'source=ebay' made DuckDB's Hive auto-detection
         overwrite the real `source` column with 'ebay'. Raw reads must use hive_partitioning=false."""
