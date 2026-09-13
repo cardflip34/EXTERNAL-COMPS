@@ -51,18 +51,28 @@ def refresh_running() -> bool:
         return False
 
 
-def wait_for_quiet_disk(stop_evt) -> None:
+MAX_YIELD_S = 1200  # 20 min cap: starvation is worse than contention (observed 2026-09-13: ~15 h of
+                    # continuous yielding produced ZERO card photos while a slow refresh held the lock)
+
+
+def wait_for_quiet_disk(stop_evt, enabled: bool = True) -> None:
+    """Pause while the canonical refresh owns the spindle — but never forever, and never when we were
+    invoked BY that refresh (image_sync runs inside it and holds the lock: yielding there deadlocks)."""
+    if not enabled:
+        return
     waited = 0
-    while refresh_running() and not stop_evt.is_set():
+    while refresh_running() and not stop_evt.is_set() and waited < MAX_YIELD_S:
         if waited % 300 == 0:
             print(f"[yield] canonical refresh active — pausing image writes ({waited//60}m)", flush=True)
         time.sleep(30); waited += 30
+    if waited >= MAX_YIELD_S:
+        print(f"[yield] cap reached ({MAX_YIELD_S//60}m) — proceeding at reduced concurrency", flush=True)
 
 
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
 
-def run_source(source: str, rate: float, limit: int | None, candidates: str | None = None) -> int:
+def run_source(source: str, rate: float, limit: int | None, candidates: str | None = None, do_yield: bool = True) -> int:
     cand = candidates or os.path.join(W, SOURCES[source])
     outdir = os.path.join(BASE, "ebay" if source == "ebay" else source)
     os.makedirs(outdir, exist_ok=True)
@@ -71,7 +81,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     per_worker_sleep = WORKERS / max(rate, 0.5)
     q: "queue.Queue[tuple[str,str]]" = queue.Queue(maxsize=2000)
     counts = collections.Counter(); recent = collections.deque(maxlen=300); consec403 = [0]
-    lock = threading.Lock(); stop = threading.Event()
+    lock = threading.Lock(); stop = threading.Event(); feed_done = threading.Event()
     def record(key, status, code, nbytes):
         with lock:
             counts[status] += 1; recent.append(status)
@@ -88,9 +98,15 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 print(f"[AUTO-STOP] failure surge (bad={bad}/300, consec403={consec403[0]}) — treating as block signal", flush=True)
                 stop.set()
     def worker():
+        # An empty queue does NOT mean the run is over — the feeder pauses for minutes at a time while
+        # the canonical refresh owns the spindle. Exiting here strands the feeder on a full queue with
+        # no consumers (observed 2026-09-13: eBay run alive 45 min, 1 thread, zero bytes). Only
+        # feed_done/stop may end a worker.
         while not stop.is_set():
             try: key, url = q.get(timeout=3)
-            except queue.Empty: return
+            except queue.Empty:
+                if feed_done.is_set(): return
+                continue
             t0 = time.time(); did_net = False
             try:
                 d = os.path.join(outdir, key); f = os.path.join(d, "01" + ext_of(url))
@@ -123,11 +139,20 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     with open(cand, newline="") as fh:
         for key, url in csv.reader(fh):
             if stop.is_set(): break
-            if fed % 2000 == 0: wait_for_quiet_disk(stop)
+            if fed % 2000 == 0: wait_for_quiet_disk(stop, do_yield)
             if fed % 20000 == 0 and free_gb() < 100:
                 print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
-            q.put((key, url)); fed += 1
+            while not stop.is_set():  # never block forever: a full queue with no live worker is a bug, not backpressure
+                try:
+                    q.put((key, url), timeout=30); break
+                except queue.Full:
+                    if not any(t.is_alive() for t in threads):
+                        print("[ABORT] queue full but every worker is dead — exiting instead of hanging", flush=True)
+                        stop.set()
+            if stop.is_set(): break
+            fed += 1
             if limit and fed >= limit: break
+    feed_done.set()
     while not q.empty() and not stop.is_set(): time.sleep(1)
     stop.set(); [t.join(timeout=10) for t in threads]
     ledger.flush(); ledger.close()
@@ -139,11 +164,14 @@ def main():
     ap.add_argument("--source", choices=list(SOURCES)); ap.add_argument("--all", action="store_true")
     ap.add_argument("--rate", type=float, default=6.0); ap.add_argument("--limit", type=int)
     ap.add_argument("--candidates", help="override candidates csv (delta syncs)")
+    ap.add_argument("--no-yield", action="store_true",
+                    help="do not pause for the canonical refresh (REQUIRED when invoked by image_sync, "
+                         "which runs inside the refresh and holds its lock)")
     a = ap.parse_args()
     order = list(SOURCES) if a.all else [a.source]
     if not order or order == [None]: ap.error("--source or --all required")
     for s in order:
-        rc = run_source(s, a.rate, a.limit, a.candidates)
+        rc = run_source(s, a.rate, a.limit, a.candidates, do_yield=not a.no_yield)
         if rc: sys.exit(rc)
 
 if __name__ == "__main__":

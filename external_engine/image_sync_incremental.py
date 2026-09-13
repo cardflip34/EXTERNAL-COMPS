@@ -71,7 +71,7 @@ def main():
             print(f"[image-sync] {src}: delta={n:,} -> {summary[src]['action']}", flush=True)
             if n and not owned_by_bulk:
                 rc = subprocess.run([PY_SYS, "-u", os.path.join(HERE, "comp_image_backfill.py"),
-                                     "--source", src, "--rate", str(a.rate), "--candidates", delta_path]).returncode
+                                     "--source", src, "--rate", str(a.rate), "--candidates", delta_path, "--no-yield"]).returncode
                 summary[src]["rc"] = rc
         json.dump({"at": time.strftime("%FT%TZ", time.gmtime()), "bulk_running": bulk, "sources": summary},
                   open(os.path.join(W, "image_sync_last.json"), "w"), indent=1)
