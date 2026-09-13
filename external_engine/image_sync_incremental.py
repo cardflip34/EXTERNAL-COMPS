@@ -6,14 +6,14 @@ For each image-bearing source it diffs canonical against the download ledger and
 genuinely new or previously-retryable:
   settled  = ledger status in (ok, skip, dead, small)      -> never touched again
   retryable= err / neterr / blocked                        -> re-attempted next cycle
-While the ONE-TIME bulk backfill (`comp_image_backfill.py --all`) is still running, sources it owns
-(ebay, fanatics, scp_catalog) are exported-only here (no competing downloader on the same hosts);
-tcgplayer_catalog — a different CDN the bulk run never touches — downloads immediately.
+Any source a bulk comp_image_backfill is currently downloading (whether launched as `--all` or as
+`--source X`) is exported-only here, so there is never a second downloader competing for the same
+spindle; everything else downloads immediately.
 Single-instance via pid lockfile. Deltas + logs live in comp_images/_backfill/.
 Usage: .venv_extcomps/bin/python external_engine/image_sync_incremental.py [--store DIR] [--rate 4]
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 
 import duckdb
 
@@ -32,9 +32,38 @@ def source_queries(rel: str) -> dict:
         "tcgplayer_catalog": f"SELECT regexp_extract(image_url,'/([0-9]+)\\.jpg',1) AS key, max(image_url) AS url FROM {rel} WHERE source='tcgplayer' AND image_url LIKE 'http%' GROUP BY 1",
     }
 
-def bulk_backfill_running() -> bool:
-    r = subprocess.run(["/usr/bin/pgrep", "-f", "comp_image_backfill.py --all"], capture_output=True, text=True)
-    return bool(r.stdout.strip())
+def bulk_backfill_sources() -> set:
+    """Sources a bulk comp_image_backfill is ALREADY downloading, so we never start a second one.
+
+    Was `pgrep -f "comp_image_backfill.py --all"`, which only recognised the --all form. A targeted
+    run (`--source scp_catalog`, how the card-photo priority pass is launched) went undetected, so
+    this would have spawned a competing downloader on the same source: two 8-worker pools on one
+    spinning disk, the seek-thrashing that measured 0.51/s against 6.0/s for a single pool.
+    """
+    pids = subprocess.run(["/usr/bin/pgrep", "-f", "comp_image_backfill.py"],
+                          capture_output=True, text=True).stdout.split()
+    if not pids:
+        return set()
+    # NB: two steps because macOS pgrep will not print command lines. Unlike Linux procps, `-a` here
+    # does NOT mean --list-full: it is accepted, exits 0, still prints bare PIDs (and quietly widens
+    # the match). Parsing that output for "--source" finds nothing and reports "nothing running" --
+    # a silent false negative, the worst shape of failure for a guard whose whole job is to say stop.
+    lines = subprocess.run(["/bin/ps", "-o", "command=", "-p", ",".join(pids)],
+                           capture_output=True, text=True).stdout
+    return sources_from_cmdlines(lines.splitlines())
+
+
+def sources_from_cmdlines(lines) -> set:
+    """Which sources the given comp_image_backfill command lines are downloading. Split out from the
+    process lookup so it is testable without spawning anything."""
+    owned = set()
+    for line in lines:
+        if "--all" in line:
+            owned |= {"ebay", "fanatics", "scp_catalog"}
+        m = re.search(r"--source\s+(\S+)", line)
+        if m:
+            owned.add(m.group(1))
+    return owned
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--store", default=STORE); ap.add_argument("--rate", type=float, default=4.0)
@@ -50,7 +79,7 @@ def main():
         P = os.path.join(a.store, "external_store", "parquet")
         rel = f"read_parquet('{P}/**/*.parquet', hive_partitioning=true, union_by_name=true)"
         con = duckdb.connect(); con.execute("SET memory_limit='800MB'; SET threads=1")
-        bulk = bulk_backfill_running()
+        bulk = bulk_backfill_sources()
         summary = {}
         for src, q in source_queries(rel).items():
             led = os.path.join(W, f"ledger_{src}.jsonl")
@@ -66,8 +95,8 @@ def main():
                             WHERE c.key IS NOT NULL AND c.key NOT IN (SELECT k FROM {led_rel} WHERE k IS NOT NULL))
                             TO '{delta_path}' (HEADER false)""")
             n = sum(1 for _ in open(delta_path))
-            owned_by_bulk = bulk and src in ("ebay", "fanatics", "scp_catalog")
-            summary[src] = {"delta": n, "action": "export-only (bulk backfill owns this host)" if owned_by_bulk else ("download" if n else "none")}
+            owned_by_bulk = src in bulk
+            summary[src] = {"delta": n, "action": "export-only (a bulk backfill already owns this source)" if owned_by_bulk else ("download" if n else "none")}
             print(f"[image-sync] {src}: delta={n:,} -> {summary[src]['action']}", flush=True)
             if n and not owned_by_bulk:
                 rc = subprocess.run([PY_SYS, "-u", os.path.join(HERE, "comp_image_backfill.py"),

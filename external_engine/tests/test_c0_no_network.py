@@ -159,6 +159,34 @@ class CanonicalTests(unittest.TestCase):
             self.assertNotIn(cib.host_of(live), cib.DEAD_HOSTS)
         self.assertEqual(cib.host_of("not-a-url"), "")  # malformed input must not raise
 
+    def test_image_sync_detects_targeted_backfill_not_just_all(self):
+        """Regression: image_sync only recognised `comp_image_backfill.py --all`, so a targeted
+        `--source scp_catalog` run (how the card-photo pass is launched) looked idle and it would
+        have started a SECOND downloader on the same source — two 8-worker pools on one spinning
+        disk, the thrashing that measured 0.51/s against 6.0/s."""
+        import image_sync_incremental as isync
+        targeted = ["/usr/bin/python3 -u external_engine/comp_image_backfill.py --source scp_catalog --rate 6"]
+        self.assertEqual(isync.sources_from_cmdlines(targeted), {"scp_catalog"})
+        every = ["/usr/bin/python3 -u external_engine/comp_image_backfill.py --all --rate 6"]
+        self.assertEqual(isync.sources_from_cmdlines(every), {"ebay", "fanatics", "scp_catalog"})
+        self.assertEqual(isync.sources_from_cmdlines([]), set())
+        # a source named with --candidates but no --source must not be claimed
+        self.assertEqual(isync.sources_from_cmdlines(
+            ["python comp_image_backfill.py --candidates /x/candidates_ebay_delta.csv"]), set())
+
+    def test_macos_pgrep_does_not_emit_cmdlines(self):
+        """Fixing the above by reaching for `pgrep -af` does NOT work on macOS and fails silently:
+        unlike Linux procps, -a is not --list-full here. It is accepted, exits 0, and still prints
+        bare PIDs, so parsing that output for "--source" matches nothing and the guard reports
+        "nothing running" — passing the very case it exists to catch. Hence the two-step ps lookup."""
+        import subprocess
+        r = subprocess.run(["/usr/bin/pgrep", "-af", "launchd"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            self.assertTrue(all(ln.strip().isdigit() for ln in r.stdout.splitlines()),
+                            "pgrep -a now emits command lines here; the two-step ps lookup may be simplified")
+        src = open(os.path.join(ENGINE, "image_sync_incremental.py")).read()
+        self.assertNotIn('"-af"', src, "parse command lines via ps, not pgrep -af")
+
     def test_raw_parquet_roundtrip_keeps_discovery_source(self):
         """Regression: a raw Parquet path containing 'source=ebay' made DuckDB's Hive auto-detection
         overwrite the real `source` column with 'ebay'. Raw reads must use hive_partitioning=false."""
