@@ -18,23 +18,46 @@ Usage:
   /usr/bin/python3 external_engine/comp_image_backfill.py --all         # ebay -> fanatics -> scp_catalog
 """
 from __future__ import annotations
-import argparse, collections, csv, json, os, queue, sys, threading, time, urllib.request, urllib.error
+import argparse, collections, csv, json, os, queue, subprocess, sys, threading, time, urllib.request, urllib.error
 
 BASE = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"
 W = os.path.join(BASE, "_backfill")
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
 SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv", "scp_catalog": "candidates_scp_catalog.csv",
            "tcgplayer_catalog": "candidates_tcgplayer_catalog.csv"}
-# 30 workers, NOT a politeness change: the 6 req/s cap below is unchanged. Measured 2026-09-10 — with 6
-# workers each blocking ~5 s on a ~434 KB image, throughput was 1.19 req/s, i.e. only 20% of the budget we
-# already set. Worker count must exceed rate*latency to actually reach the cap; the limiter still enforces 6/s.
-WORKERS = 30
+# 8 workers. NOT a politeness figure — a DISK figure. Measured 2026-09-12: the 6TB is a spinning HDD
+# shared with the SCP scrub and the DuckDB canonical refresh; 30 concurrent small-file writers caused seek
+# thrashing and throughput FELL to 0.51/s (below the 6-worker 1.19/s). On HDD, concurrency past a small
+# number is negative. Also see wait_for_quiet_disk(): we yield entirely while a canonical refresh holds
+# its lock rather than fight it.
+WORKERS = 8
 
 def ext_of(url: str) -> str:
     p = url.split("?")[0].lower()
     for e in (".webp", ".jpg", ".jpeg", ".png"):
         if p.endswith(e): return ".jpg" if e == ".jpeg" else e
     return ".jpg"
+
+REFRESH_LOCK = os.path.expanduser("~/mazi_local_evidence/canonical_refresh.lock")
+
+def refresh_running() -> bool:
+    """True while the 6-hourly canonical refresh holds its lock — it saturates the same spindle."""
+    try:
+        pid = open(REFRESH_LOCK).read().strip()
+        if not pid.isdigit():
+            return False
+        return subprocess.run(["/bin/kill", "-0", pid], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def wait_for_quiet_disk(stop_evt) -> None:
+    waited = 0
+    while refresh_running() and not stop_evt.is_set():
+        if waited % 300 == 0:
+            print(f"[yield] canonical refresh active — pausing image writes ({waited//60}m)", flush=True)
+        time.sleep(30); waited += 30
+
 
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
@@ -100,6 +123,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     with open(cand, newline="") as fh:
         for key, url in csv.reader(fh):
             if stop.is_set(): break
+            if fed % 2000 == 0: wait_for_quiet_disk(stop)
             if fed % 20000 == 0 and free_gb() < 100:
                 print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
             q.put((key, url)); fed += 1
