@@ -4,6 +4,11 @@
 Rot census 2026-09-10: 302/302 sampled URLs alive (eBay back to 2015, SCP, Fanatics) -> archive now
 while everything is still fetchable. Candidates come from canonical (see _backfill/candidates_*.csv).
 
+CORRECTION 2026-09-13: that census was too small to be trusted per-source. A host-level check of the
+fanatics candidates found 401,985 of 1,455,961 rows (27.6%) on origins that are already gone — see
+DEAD_HOSTS. Rot is NOT uniform across sources; sample by host, not by row count, before claiming a
+source is archivable. The remaining 72.4% are alive and downloadable.
+
 Design:
   * stdlib only (/usr/bin/python3): urllib + threads. GLOBAL rate cap (default 6 req/s) via worker pacing.
   * RESUMABLE: skips any key whose file already exists >1KB (the 1.44M images saved by the old v2
@@ -31,6 +36,25 @@ SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv",
 # number is negative. Also see wait_for_quiet_disk(): we yield entirely while a canonical refresh holds
 # its lock rather than fight it.
 WORKERS = 8
+
+# Hosts that are broken at the ORIGIN, verified 2026-09-13 — never worth a request:
+#   host.jwcinc.net              NXDOMAIN (domain gone; 32,536 fanatics rows, all pre-2014)
+#   dw7591lwb84er.cloudfront.net HTTP 500 from Fanatics' own image-fetcher role, which lacks
+#                                s3:ListBucket on the pwccauctions bucket (369,449 rows)
+# These must be dropped at the FEEDER, not attempted and recorded: the candidates files are
+# time-ordered, so dead hosts arrive in contiguous runs. A run of them pushes the rolling
+# failure ratio past the 40%/300 auto-stop and halts an otherwise healthy job — which reads
+# exactly like a block. 72% of the fanatics candidates are alive and downloadable; only these
+# two hosts are not.
+DEAD_HOSTS = frozenset({"host.jwcinc.net", "dw7591lwb84er.cloudfront.net"})
+
+
+def host_of(url: str) -> str:
+    try:
+        return url.split("/")[2].lower()
+    except IndexError:
+        return ""
+
 
 def ext_of(url: str) -> str:
     p = url.split("?")[0].lower()
@@ -135,10 +159,12 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                     if dt < per_worker_sleep: time.sleep(per_worker_sleep - dt)
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(WORKERS)]
     [t.start() for t in threads]
-    fed = 0
+    fed = 0; dead_host = 0
     with open(cand, newline="") as fh:
         for key, url in csv.reader(fh):
             if stop.is_set(): break
+            if host_of(url) in DEAD_HOSTS:
+                dead_host += 1; continue  # origin is gone — skip without spending a request or a failure slot
             if fed % 2000 == 0: wait_for_quiet_disk(stop, do_yield)
             if fed % 20000 == 0 and free_gb() < 100:
                 print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
@@ -156,7 +182,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     while not q.empty() and not stop.is_set(): time.sleep(1)
     stop.set(); [t.join(timeout=10) for t in threads]
     ledger.flush(); ledger.close()
-    print(f"[{source}] done: {dict(counts)} (fed {fed:,})", flush=True)
+    print(f"[{source}] done: {dict(counts)} (fed {fed:,}, dead_host_skipped {dead_host:,})", flush=True)
     return 3 if consec403[0] >= 8 else 0
 
 def main():

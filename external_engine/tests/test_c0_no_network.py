@@ -20,6 +20,7 @@ sys.path.insert(0, ROOT)
 
 import duckdb  # noqa: E402
 import canonical_migrate as cm  # noqa: E402
+import comp_image_backfill as cib  # noqa: E402
 import source_health as sh  # noqa: E402
 
 
@@ -138,6 +139,25 @@ class CanonicalTests(unittest.TestCase):
         self.assertEqual(g["2"], "not_a_listing")  # case/whitespace insensitive
         self.assertEqual(g["3"], "ok")             # real card untouched
         self.assertEqual(g["4"], "ok")             # substring is NOT enough — only the whole title counts
+
+    def test_dead_image_hosts_are_skipped_not_attempted(self):
+        """Regression: fanatics candidates are time-ordered, so the 401,985 rows on dead origins
+        (NXDOMAIN / origin-side HTTP 500) arrive in contiguous runs. Attempting them would push the
+        rolling failure ratio past the 40%/300 auto-stop and halt a job whose other 72% is healthy —
+        indistinguishable from a block. They must be dropped at the feeder, costing no request."""
+        self.assertEqual(cib.host_of("http://host.jwcinc.net/712533/brent/2013_8/142_7_1.jpg"),
+                         "host.jwcinc.net")
+        self.assertEqual(cib.host_of("https://dw7591lwb84er.cloudfront.net/eyJpdiI6IjZo"),
+                         "dw7591lwb84er.cloudfront.net")
+        for dead in ("http://host.jwcinc.net/a/b.jpg", "https://dw7591lwb84er.cloudfront.net/x"):
+            self.assertIn(cib.host_of(dead), cib.DEAD_HOSTS)
+        # the three live fanatics origins must NOT be filtered (verified 200/image-jpeg 2026-09-13)
+        for live in ("https://dilxwvfkfup17.cloudfront.net/a.jpg",
+                     "https://cdn-vault.fanaticscollect.com/b.jpg",
+                     "https://img.beckett.com/c.jpg",
+                     "https://storage.googleapis.com/images.pricecharting.com/x/240.jpg"):
+            self.assertNotIn(cib.host_of(live), cib.DEAD_HOSTS)
+        self.assertEqual(cib.host_of("not-a-url"), "")  # malformed input must not raise
 
     def test_raw_parquet_roundtrip_keeps_discovery_source(self):
         """Regression: a raw Parquet path containing 'source=ebay' made DuckDB's Hive auto-detection
