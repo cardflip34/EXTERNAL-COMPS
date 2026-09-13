@@ -10,6 +10,19 @@ LOG=$D/watchdog.log
 HB=$D/heartbeat.json
 ts() { date -u +%FT%TZ; }
 
+# --- single instance ----------------------------------------------------------
+# launchd re-fires every 300 s regardless of whether the last pass finished. A pass that
+# outlives its interval therefore STACKS. Observed 2026-09-13: 10 live instances, the oldest
+# 43 min deep in a `wc -l` of the 11 GB JSONL, each stacked copy adding another 11 GB
+# sequential read to the same spindle the image downloader is writing to — a feedback loop
+# where being slow made it slower. A pass must never start while one is already running.
+LOCK=$D/watchdog.pid
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+  exit 0
+fi
+echo $$ > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+
 DRIVER_ALIVE=1
 BRIDGE_ALIVE=1
 
@@ -45,7 +58,10 @@ fi
 # --- heartbeat -----------------------------------------------------------------
 DONE=$(/usr/bin/python3 -c "import json;print(len(json.load(open('$D/scp_broad_state.json'))['done_ids']))" 2>/dev/null || echo 0)
 LIVE_DONE=$(/usr/bin/python3 -c "import json;print(len(json.load(open('$D/scp_live_state.json'))['done_ids']))" 2>/dev/null || echo 0)
-ROWS=$(wc -l < "$D/scp_broad_comps.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+# NB: NOT `wc -l` — that reads all 11 GB off the spindle every pass (see the stacking note above).
+# rowcount.py counts only bytes appended since the last pass; prints -1 until seeded with --seed.
+ROWS=$(/usr/bin/python3 "$D/rowcount.py" "$D/scp_broad_comps.jsonl" "$D/rowcount_state.json" 2>/dev/null || echo -1)
+ROWS=${ROWS:--1}
 # NB: grep -c prints "0" AND exits 1 on no-match, so no "|| echo 0" (double-print).
 BLOCKED=$(grep -c "BLOCKED" "$D/scp_broad_run.log" 2>/dev/null); BLOCKED=${BLOCKED:-0}
 BRIDGED=$(/usr/bin/python3 -c "import json;print(json.load(open('$D/scp_broad_comps.bridge_state.json')).get('inserted',0))" 2>/dev/null || echo 0)
