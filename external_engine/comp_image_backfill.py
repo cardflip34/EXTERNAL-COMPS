@@ -85,14 +85,15 @@ def refresh_running() -> bool:
 # Pacing instead of blocking keeps both jobs moving, and it retires an entire bug class: nothing waits on
 # a lock any more, so image_sync (which runs INSIDE the refresh, holding that very lock) can no longer
 # deadlock against its own child. --no-yield is kept for callers that want no refresh deference at all.
-REFRESH_BACKOFF = 10.0
-# 10x, not 3x. Measured 2026-09-14 while both ran: the refresh had burned 2m28s of CPU across 1h27m of
-# wall clock -- 97% blocked on I/O -- with RSS still climbing, i.e. alive but starving. A spinning disk
-# is IOPS-bound, and small-file image writes are far more IOPS-expensive than their ~80KB/s of bandwidth
-# suggests (mkdir + create + rename each), so even a modest image rate was eating a large share of the
-# spindle's random-IO budget. Racing makes BOTH jobs slow: serialise instead. Backing off hard lets the
-# refresh finish, and the moment it drops its lock this returns to full rate on its own -- which is the
-# fastest route to a finished photo library, not the slowest.
+REFRESH_BACKOFF = 2.0
+# Tried 10x on the theory that image writes were starving the concurrent refresh of the spindle. The
+# experiment refuted it: at 8 req/s the refresh got ~3% CPU, and after throttling to 2.5 req/s it got
+# 1.3% -- SLOWER. Backing off bought nothing, because the refresh does not contend with us at all:
+#   iostat 2026-09-14 -- disk6 (the 6TB, where images are written) 20-143 tps ... idle
+#                        disk0 (internal, Chrome + Spotlight + DuckDB spill) 8,000-9,200 tps ... pinned
+# The images land on the quiet disk. What is saturated is the internal one, which this job barely
+# touches. So deference here is close to pure cost; 2x is a small hedge against being wrong a third
+# time, not a belief that it helps. Measure disk6 before ever raising it again.
 
 
 # The Whatnot live-capture fleet shares this Mini, and bot_manager sheds capture bots once load stays
@@ -105,8 +106,13 @@ CAPTURE_BACKOFF = 4.0   # multiply the per-request pause by this while the fleet
 # 2 req/s for no reason. What actually matters is headroom under bot_manager's ~36 shed threshold, so
 # back off approaching it and only resume once load has fallen well clear — the gap is what stops us
 # oscillating against our own contribution to the number.
-LOAD_BACKOFF_ON = 28.0
-LOAD_BACKOFF_OFF = 20.0
+# Raised from 28/20 after the same measurement. System load here is dominated by Chrome (the capture
+# bots) and Spotlight on the INTERNAL disk; this job's work is network plus writes to the external 6TB,
+# so it barely moves the number it was being judged by. At 28 it throttled itself almost permanently for
+# contention it was not part of. Kept as a genuine emergency brake — bot_manager sheds capture bots above
+# ~36 sustained, so back off near there, not far below it.
+LOAD_BACKOFF_ON = 45.0
+LOAD_BACKOFF_OFF = 34.0
 
 
 def live_capture_pressure(backed_off: bool) -> bool:
