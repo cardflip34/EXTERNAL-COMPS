@@ -56,7 +56,15 @@ def freshness(date: str, limit: int, max_pages: int, subjects: list[str] | None,
     ok, why = sh.contact_allowed("ebay", STORE)
     if not ok:
         _log(f"REFUSED: {why}"); return 3
-    subs = subjects or [e["player_name"] for e in roster({"completed_existing", "completed_phase_scrub"})]
+    if subjects:
+        subs = subjects
+    else:
+        # Standing non-player targets first: they are few, and they are the ones nothing else covers.
+        # The roster is sports players only, so before this a category like VeeFriends was scrubbed
+        # only by accident — every VeeFriends row in canonical arrived under some other query.
+        import scrub_plan
+        subs = scrub_plan.subjects() + [e["player_name"] for e in
+                                        roster({"completed_existing", "completed_phase_scrub"})]
     subs = subs[:limit]
     w = _writer(); L = w.ledger
     done = 0; staged_rows = 0; ingested = 0
