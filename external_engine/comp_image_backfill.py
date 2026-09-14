@@ -33,8 +33,10 @@ SOURCES = {"ebay": "candidates_ebay.csv", "fanatics": "candidates_fanatics.csv",
 # 8 workers. NOT a politeness figure — a DISK figure. Measured 2026-09-12: the 6TB is a spinning HDD
 # shared with the SCP scrub and the DuckDB canonical refresh; 30 concurrent small-file writers caused seek
 # thrashing and throughput FELL to 0.51/s (below the 6-worker 1.19/s). On HDD, concurrency past a small
-# number is negative. Also see wait_for_quiet_disk(): we yield entirely while a canonical refresh holds
-# its lock rather than fight it.
+# number is negative — for the ~434KB eBay listing photos that figure was measured against. Small catalog
+# thumbnails (SCP images are ~10KB) are a different shape and take more concurrency before the spindle is
+# the limit, so this is only a DEFAULT now: see --workers. Contention with the refresh is handled by
+# REFRESH_BACKOFF (pace down, never stop).
 WORKERS = 8
 
 # Hosts that are broken at the ORIGIN, verified 2026-09-13 — never worth a request:
@@ -75,59 +77,53 @@ def refresh_running() -> bool:
         return False
 
 
-MAX_YIELD_S = 1200  # 20 min cap: starvation is worse than contention (observed 2026-09-13: ~15 h of
-                    # continuous yielding produced ZERO card photos while a slow refresh held the lock)
-                    # NOTE FOR ANYTHING THAT MONITORS THIS JOB: no results are recorded during a yield,
-                    # so progress_<source>.json can legitimately sit untouched for the whole 1200 s. A
-                    # liveness check with a threshold below that will call a healthy job wedged (done
-                    # once, 2026-09-13). Either allow > MAX_YIELD_S, or gate the tight threshold on
-                    # canonical_refresh.lock NOT being held — idle with nothing to wait for is wedged.
-
-
-def wait_for_quiet_disk(stop_evt, enabled: bool = True) -> None:
-    """Pause while the canonical refresh owns the spindle — but never forever, and never when we were
-    invoked BY that refresh (image_sync runs inside it and holds the lock: yielding there deadlocks)."""
-    if not enabled:
-        return
-    waited = 0
-    while refresh_running() and not stop_evt.is_set() and waited < MAX_YIELD_S:
-        if waited % 300 == 0:
-            print(f"[yield] canonical refresh active — pausing image writes ({waited//60}m)", flush=True)
-        time.sleep(30); waited += 30
-    if waited >= MAX_YIELD_S:
-        print(f"[yield] cap reached ({MAX_YIELD_S//60}m) — proceeding at reduced concurrency", flush=True)
+# SLOW DOWN for the canonical refresh; never STOP for it. The original design blocked outright while the
+# refresh held its lock, which failed twice in opposite directions:
+#   1. unbounded, it starved completely — ~15 h of continuous waiting produced ZERO images (2026-09-13);
+#   2. capped at 20 min, it still only managed a ~6% duty cycle, because the feeder re-entered the wait
+#      every 2000 candidates: ~80 s of work per 20 min of waiting against a 1 h 20 m refresh. Measured 0/s.
+# Pacing instead of blocking keeps both jobs moving, and it retires an entire bug class: nothing waits on
+# a lock any more, so image_sync (which runs INSIDE the refresh, holding that very lock) can no longer
+# deadlock against its own child. --no-yield is kept for callers that want no refresh deference at all.
+REFRESH_BACKOFF = 3.0
 
 
 # The Whatnot live-capture fleet shares this Mini, and bot_manager sheds capture bots once load stays
 # above ~36. A live auction happens once; this backfill is historical and resumable, so it must always
 # be the thing that gives way. Observed 2026-09-13: fleet at 0/2 bots with load 60-90 while this ran at
 # 6 req/s. Stay well clear of the shed threshold.
-LOAD_CEILING = 30.0
-CAPTURE_BACKOFF = 3.0   # multiply the per-request pause by this while the fleet needs the machine
+CAPTURE_BACKOFF = 4.0   # multiply the per-request pause by this while the fleet needs the machine
+# Hysteresis band, not a single threshold. Backing off merely because run_bot.py EXISTS was far too
+# blunt: measured 2026-09-14 with 2 bots happily capturing at load 10 while this sat throttled to
+# 2 req/s for no reason. What actually matters is headroom under bot_manager's ~36 shed threshold, so
+# back off approaching it and only resume once load has fallen well clear — the gap is what stops us
+# oscillating against our own contribution to the number.
+LOAD_BACKOFF_ON = 28.0
+LOAD_BACKOFF_OFF = 20.0
 
 
-def live_capture_pressure() -> bool:
-    """True while the live-capture fleet is running, or the box is loaded enough that it soon will be
-    shedding bots. Presence-based first so we do not oscillate against our own contribution to load."""
-    if subprocess.run(["/usr/bin/pgrep", "-f", "run_bot.py"], capture_output=True).returncode == 0:
-        return True
+def live_capture_pressure(backed_off: bool) -> bool:
+    """Whether to keep giving the machine to the live-capture fleet, given our current state."""
     try:
-        return os.getloadavg()[0] >= LOAD_CEILING
+        load1 = os.getloadavg()[0]
     except OSError:
         return False
+    return load1 > LOAD_BACKOFF_OFF if backed_off else load1 >= LOAD_BACKOFF_ON
 
 
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
 
-def run_source(source: str, rate: float, limit: int | None, candidates: str | None = None, do_yield: bool = True) -> int:
+def run_source(source: str, rate: float, limit: int | None, candidates: str | None = None, do_yield: bool = True,
+               workers: int = WORKERS) -> int:
     cand = candidates or os.path.join(W, SOURCES[source])
     outdir = os.path.join(BASE, "ebay" if source == "ebay" else source)
     os.makedirs(outdir, exist_ok=True)
     ledger = open(os.path.join(W, f"ledger_{source}.jsonl"), "a")
     prog_path = os.path.join(W, f"progress_{source}.json")
-    base_sleep = WORKERS / max(rate, 0.5)
-    pace = [base_sleep]   # mutable so the feeder can re-pace live workers when the capture fleet needs the box
+    base_sleep = workers / max(rate, 0.5)
+    pace = [base_sleep]      # mutable so the feeder can re-pace live workers without a restart
+    cap_state = [False]      # capture-backoff latch, kept separate so refresh pacing cannot confuse its hysteresis
     q: "queue.Queue[tuple[str,str]]" = queue.Queue(maxsize=2000)
     counts = collections.Counter(); recent = collections.deque(maxlen=300); consec403 = [0]
     lock = threading.Lock(); stop = threading.Event(); feed_done = threading.Event()
@@ -182,7 +178,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 if did_net:  # pace only real network hits; disk-skip resumes fly through at full speed
                     dt = time.time() - t0
                     if dt < pace[0]: time.sleep(pace[0] - dt)
-    threads = [threading.Thread(target=worker, daemon=True) for _ in range(WORKERS)]
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(workers)]
     [t.start() for t in threads]
     fed = 0; dead_host = 0
     with open(cand, newline="") as fh:
@@ -191,11 +187,14 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
             if host_of(url) in DEAD_HOSTS:
                 dead_host += 1; continue  # origin is gone — skip without spending a request or a failure slot
             if fed % 2000 == 0:
-                wait_for_quiet_disk(stop, do_yield)
-                want = base_sleep * (CAPTURE_BACKOFF if live_capture_pressure() else 1.0)
+                cap_state[0] = live_capture_pressure(cap_state[0])
+                refresh = do_yield and refresh_running()
+                mult = max(REFRESH_BACKOFF if refresh else 1.0, CAPTURE_BACKOFF if cap_state[0] else 1.0)
+                want = base_sleep * mult
                 if want != pace[0]:
-                    print(f"[pace] {'backing off for live capture' if want > pace[0] else 'fleet idle — resuming'}: "
-                          f"{rate/ (want/base_sleep):.1f} req/s", flush=True)
+                    why = "canonical refresh" if refresh and mult == REFRESH_BACKOFF else (
+                          "live capture" if cap_state[0] else "clear")
+                    print(f"[pace] {why}: {rate / mult:.1f} req/s (load {os.getloadavg()[0]:.1f})", flush=True)
                     pace[0] = want
             if fed % 20000 == 0 and free_gb() < 100:
                 print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
@@ -220,6 +219,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=list(SOURCES)); ap.add_argument("--all", action="store_true")
     ap.add_argument("--rate", type=float, default=6.0); ap.add_argument("--limit", type=int)
+    ap.add_argument("--workers", type=int, default=WORKERS,
+                    help=f"concurrent fetchers (default {WORKERS}; tuned for ~434KB eBay images — small "
+                         "catalog thumbnails can take more before the spindle is the limit)")
     ap.add_argument("--candidates", help="override candidates csv (delta syncs)")
     ap.add_argument("--no-yield", action="store_true",
                     help="do not pause for the canonical refresh (REQUIRED when invoked by image_sync, "
@@ -228,7 +230,7 @@ def main():
     order = list(SOURCES) if a.all else [a.source]
     if not order or order == [None]: ap.error("--source or --all required")
     for s in order:
-        rc = run_source(s, a.rate, a.limit, a.candidates, do_yield=not a.no_yield)
+        rc = run_source(s, a.rate, a.limit, a.candidates, do_yield=not a.no_yield, workers=a.workers)
         if rc: sys.exit(rc)
 
 if __name__ == "__main__":
