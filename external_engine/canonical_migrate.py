@@ -271,7 +271,11 @@ def main():
         COPY canonical_t TO '{canon_dir}'
         (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (year, month), OVERWRITE_OR_IGNORE true, ROW_GROUP_SIZE 200000)
     """)
-    con.execute(f"CREATE VIEW canonical_v AS SELECT * FROM read_parquet('{canon_dir}/**/*.parquet', hive_partitioning=true)")
+    # union_by_name: every other read of the canonical store already uses it; this one did not, so a
+    # single partition gaining a column would have failed the audit stage here while everything else
+    # kept working. Partitions are rewritten per source and per refresh, so they are transiently out of
+    # step by design — tolerating that is the point, not an edge case.
+    con.execute(f"CREATE VIEW canonical_v AS SELECT * FROM read_parquet('{canon_dir}/**/*.parquet', hive_partitioning=true, union_by_name=true)")
     canon_seconds = round(time.time() - t0, 1)
     print(f"[canon] partitioned parquet written ({canon_seconds}s total)", flush=True)
 
