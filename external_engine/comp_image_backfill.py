@@ -111,8 +111,17 @@ CAPTURE_BACKOFF = 4.0   # multiply the per-request pause by this while the fleet
 # so it barely moves the number it was being judged by. At 28 it throttled itself almost permanently for
 # contention it was not part of. Kept as a genuine emergency brake — bot_manager sheds capture bots above
 # ~36 sustained, so back off near there, not far below it.
-LOAD_BACKOFF_ON = 45.0
-LOAD_BACKOFF_OFF = 34.0
+LOAD_BACKOFF_ON = 80.0
+LOAD_BACKOFF_OFF = 60.0
+# Third and final setting of these numbers, so the reasoning is worth stating plainly. Load on this box
+# swings 16 -> 68 within a minute purely from Chrome renderers starting and stopping for the capture
+# bots. Any threshold near that band throttles this job continuously on a signal it does not drive, and
+# both 28 and 45 did exactly that while the fleet sat happily at 2/2 target and the 6TB sat idle.
+# bot_manager already has its OWN governor and sheds its own bots when it needs to; a second guard here,
+# keyed on a number this job barely moves, is redundant cost rather than safety. 80 is above anything
+# observed except the genuine 2026-09-13 crisis (89), so it now fires only in a real emergency.
+# If this job ever does need to defer, the honest signal is fleet-target shortfall or disk6 saturation —
+# not system load. Measure before lowering these again.
 
 
 def live_capture_pressure(backed_off: bool) -> bool:
