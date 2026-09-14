@@ -93,6 +93,25 @@ def wait_for_quiet_disk(stop_evt, enabled: bool = True) -> None:
         print(f"[yield] cap reached ({MAX_YIELD_S//60}m) — proceeding at reduced concurrency", flush=True)
 
 
+# The Whatnot live-capture fleet shares this Mini, and bot_manager sheds capture bots once load stays
+# above ~36. A live auction happens once; this backfill is historical and resumable, so it must always
+# be the thing that gives way. Observed 2026-09-13: fleet at 0/2 bots with load 60-90 while this ran at
+# 6 req/s. Stay well clear of the shed threshold.
+LOAD_CEILING = 30.0
+CAPTURE_BACKOFF = 3.0   # multiply the per-request pause by this while the fleet needs the machine
+
+
+def live_capture_pressure() -> bool:
+    """True while the live-capture fleet is running, or the box is loaded enough that it soon will be
+    shedding bots. Presence-based first so we do not oscillate against our own contribution to load."""
+    if subprocess.run(["/usr/bin/pgrep", "-f", "run_bot.py"], capture_output=True).returncode == 0:
+        return True
+    try:
+        return os.getloadavg()[0] >= LOAD_CEILING
+    except OSError:
+        return False
+
+
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
 
@@ -102,7 +121,8 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     os.makedirs(outdir, exist_ok=True)
     ledger = open(os.path.join(W, f"ledger_{source}.jsonl"), "a")
     prog_path = os.path.join(W, f"progress_{source}.json")
-    per_worker_sleep = WORKERS / max(rate, 0.5)
+    base_sleep = WORKERS / max(rate, 0.5)
+    pace = [base_sleep]   # mutable so the feeder can re-pace live workers when the capture fleet needs the box
     q: "queue.Queue[tuple[str,str]]" = queue.Queue(maxsize=2000)
     counts = collections.Counter(); recent = collections.deque(maxlen=300); consec403 = [0]
     lock = threading.Lock(); stop = threading.Event(); feed_done = threading.Event()
@@ -156,7 +176,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 q.task_done()
                 if did_net:  # pace only real network hits; disk-skip resumes fly through at full speed
                     dt = time.time() - t0
-                    if dt < per_worker_sleep: time.sleep(per_worker_sleep - dt)
+                    if dt < pace[0]: time.sleep(pace[0] - dt)
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(WORKERS)]
     [t.start() for t in threads]
     fed = 0; dead_host = 0
@@ -165,7 +185,13 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
             if stop.is_set(): break
             if host_of(url) in DEAD_HOSTS:
                 dead_host += 1; continue  # origin is gone — skip without spending a request or a failure slot
-            if fed % 2000 == 0: wait_for_quiet_disk(stop, do_yield)
+            if fed % 2000 == 0:
+                wait_for_quiet_disk(stop, do_yield)
+                want = base_sleep * (CAPTURE_BACKOFF if live_capture_pressure() else 1.0)
+                if want != pace[0]:
+                    print(f"[pace] {'backing off for live capture' if want > pace[0] else 'fleet idle — resuming'}: "
+                          f"{rate/ (want/base_sleep):.1f} req/s", flush=True)
+                    pace[0] = want
             if fed % 20000 == 0 and free_gb() < 100:
                 print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
             while not stop.is_set():  # never block forever: a full queue with no live worker is a bug, not backpressure
