@@ -9,6 +9,23 @@ fanatics candidates found 401,985 of 1,455,961 rows (27.6%) on origins that are 
 DEAD_HOSTS. Rot is NOT uniform across sources; sample by host, not by row count, before claiming a
 source is archivable. The remaining 72.4% are alive and downloadable.
 
+KNOWN CEILING — the flat <source>/<key>/ layout (measured 2026-09-14, and the binding constraint once
+connection reuse landed). One directory per image, all siblings under one parent, costs:
+
+    mkdir+write into a near-empty directory                      0.2 ms
+    mkdir+write into scp_catalog/  (~120,000 siblings)       1,424   ms      ~6,200x
+    mkdir+write into ebay/         (~1.4M siblings, IDLE)  >12,000   ms      (probe timed out)
+
+The eBay directory has no writer at all, so this is directory SIZE, not lock contention between
+workers. Two consequences: throughput DEGRADES as a source fills (scp_catalog gets slower on its way
+from 120K to 338K), and the 1.4M-entry eBay store is already far past the knee — relevant before the
+4.2M-image eBay backfill is resumed.
+
+The fix is sharding the key (e.g. <source>/<key[:2]>/<key>/) so no directory holds more than a few
+thousand entries. NOT done here: the flat path is the convention Neon/8504 and the front-end
+integration resolve against, so changing it is an interface decision, plus a migration of the 1.5M
+images already on disk. Raising --workers does not help; the cost is per-insert, not per-request.
+
 Design:
   * stdlib only (/usr/bin/python3): urllib + threads. GLOBAL rate cap (default 6 req/s) via worker pacing.
   * RESUMABLE: skips any key whose file already exists >1KB (the 1.44M images saved by the old v2
