@@ -26,6 +26,13 @@ thousand entries. NOT done here: the flat path is the convention Neon/8504 and t
 integration resolve against, so changing it is an interface decision, plus a migration of the 1.5M
 images already on disk. Raising --workers does not help; the cost is per-insert, not per-request.
 
+OPERATIONAL COROLLARY — never `ls`, `find` or `du` these directories while a job is running. Reading
+them is as expensive as writing them, and it competes for the same spindle: a single `find` over ebay/
+cut this backfill from 10 req/s to 2.2, and a forgotten background `ls` of scp_catalog/ held it there
+(both self-inflicted, 2026-09-14). Progress is already published cheaply and should be read from
+_backfill/progress_<source>.json (~100 bytes, rewritten every 500 results) and ledger_<source>.jsonl.
+Counting files by listing the directory is the expensive way to learn a number the job already tells you.
+
 Design:
   * stdlib only (/usr/bin/python3): urllib + threads. GLOBAL rate cap (default 6 req/s) via worker pacing.
   * RESUMABLE: skips any key whose file already exists >1KB (the 1.44M images saved by the old v2
