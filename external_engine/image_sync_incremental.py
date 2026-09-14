@@ -23,6 +23,17 @@ PY_SYS = "/usr/bin/python3"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTLED = ("ok", "skip", "dead", "small")
 
+# Sources we still EXPORT a delta for but must not DOWNLOAD yet. Not a preference — a measurement.
+# comp_images/ebay/ holds ~1.4M sibling directories, far past the point where a directory insert stays
+# cheap: creating one there timed out at >12 s apiece (see comp_image_backfill's KNOWN CEILING note).
+# Left to itself this sync duly started the eBay delta the moment the card-photo job finished, and in
+# 2 h 16 m it downloaded 1,000 images -- 0.12/s, i.e. >1,000 days for the 4M backlog -- while holding
+# disk and load against the live-capture fleet for effectively nothing. A job that cannot finish should
+# not be restarted every 6 hours; it just looks like activity.
+# Remove "ebay" here once the key is sharded (<source>/<key[:2]>/<key>/) and the existing images are
+# migrated. Override with MAZI_IMAGE_SYNC_PAUSED="" to force it on.
+PAUSED_SOURCES = set(filter(None, os.environ.get("MAZI_IMAGE_SYNC_PAUSED", "ebay").split(",")))
+
 # key/url expressions per source, matching the bulk exporter exactly
 def source_queries(rel: str) -> dict:
     return {
@@ -95,8 +106,10 @@ def main():
                             WHERE c.key IS NOT NULL AND c.key NOT IN (SELECT k FROM {led_rel} WHERE k IS NOT NULL))
                             TO '{delta_path}' (HEADER false)""")
             n = sum(1 for _ in open(delta_path))
-            owned_by_bulk = src in bulk
-            summary[src] = {"delta": n, "action": "export-only (a bulk backfill already owns this source)" if owned_by_bulk else ("download" if n else "none")}
+            owned_by_bulk = src in bulk or src in PAUSED_SOURCES
+            why = ("export-only (a bulk backfill already owns this source)" if src in bulk else
+                   "export-only (PAUSED: directory past the insert-cost knee — see PAUSED_SOURCES)")
+            summary[src] = {"delta": n, "action": why if owned_by_bulk else ("download" if n else "none")}
             print(f"[image-sync] {src}: delta={n:,} -> {summary[src]['action']}", flush=True)
             if n and not owned_by_bulk:
                 rc = subprocess.run([PY_SYS, "-u", os.path.join(HERE, "comp_image_backfill.py"),
