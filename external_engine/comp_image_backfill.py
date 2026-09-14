@@ -77,6 +77,11 @@ def refresh_running() -> bool:
 
 MAX_YIELD_S = 1200  # 20 min cap: starvation is worse than contention (observed 2026-09-13: ~15 h of
                     # continuous yielding produced ZERO card photos while a slow refresh held the lock)
+                    # NOTE FOR ANYTHING THAT MONITORS THIS JOB: no results are recorded during a yield,
+                    # so progress_<source>.json can legitimately sit untouched for the whole 1200 s. A
+                    # liveness check with a threshold below that will call a healthy job wedged (done
+                    # once, 2026-09-13). Either allow > MAX_YIELD_S, or gate the tight threshold on
+                    # canonical_refresh.lock NOT being held — idle with nothing to wait for is wedged.
 
 
 def wait_for_quiet_disk(stop_evt, enabled: bool = True) -> None:
