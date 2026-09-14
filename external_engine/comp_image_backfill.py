@@ -23,7 +23,8 @@ Usage:
   /usr/bin/python3 external_engine/comp_image_backfill.py --all         # ebay -> fanatics -> scp_catalog
 """
 from __future__ import annotations
-import argparse, collections, csv, json, os, queue, subprocess, sys, threading, time, urllib.request, urllib.error
+import argparse, collections, csv, http.client, json, os, queue, subprocess, sys, threading, time
+import urllib.error, urllib.parse, urllib.request
 
 BASE = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"
 W = os.path.join(BASE, "_backfill")
@@ -133,6 +134,56 @@ def live_capture_pressure(backed_off: bool) -> bool:
     return load1 > LOAD_BACKOFF_OFF if backed_off else load1 >= LOAD_BACKOFF_ON
 
 
+class KeepAlive:
+    """One reusable connection per host, per worker.
+
+    urllib.request.urlopen opens a fresh TCP+TLS connection for EVERY call. For ~10KB catalog
+    thumbnails the handshake dominates the transfer. Measured 2026-09-14: 16 workers managed 5.5 req/s
+    against an allowed 12.5, i.e. ~2.9 s per 10KB image, with the 6TB idle (75-128 tps) and the pace
+    ceiling not the binding constraint — the time was going into per-request setup, not transfer.
+    Every SCP catalog image is on one host, so a kept-alive connection removes that setup per image.
+    """
+
+    def __init__(self, timeout: int = 20):
+        self.timeout = timeout
+        self.conns: dict = {}
+
+    def _close(self, ck) -> None:
+        c = self.conns.pop(ck, None)
+        if c is not None:
+            try: c.close()
+            except Exception: pass
+
+    def get(self, url: str, headers: dict, max_bytes: int = 3_000_000, _hops: int = 3):
+        parts = urllib.parse.urlsplit(url)
+        ck = (parts.scheme, parts.netloc)
+        conn = self.conns.get(ck)
+        if conn is None:
+            cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+            conn = cls(parts.netloc, timeout=self.timeout)
+            self.conns[ck] = conn
+        path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
+        try:
+            conn.request("GET", path, headers={**headers, "Connection": "keep-alive"})
+            r = conn.getresponse()
+            data = r.read(max_bytes)
+            if len(data) >= max_bytes:
+                self._close(ck)          # oversized body: cheaper to drop the connection than drain it
+            else:
+                r.read()                 # a response must be fully consumed before the socket is reusable
+            status, loc = r.status, r.getheader("Location")
+        except Exception:
+            self._close(ck)              # a half-used connection is poison; next call reconnects
+            raise
+        if status in (301, 302, 303, 307, 308) and loc and _hops > 0:
+            return self.get(urllib.parse.urljoin(url, loc), headers, max_bytes, _hops - 1)
+        return status, data
+
+    def close_all(self) -> None:
+        for ck in list(self.conns):
+            self._close(ck)
+
+
 def free_gb() -> float:
     st = os.statvfs(BASE); return st.f_bavail * st.f_frsize / 1e9
 
@@ -165,6 +216,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 print(f"[AUTO-STOP] failure surge (bad={bad}/300, consec403={consec403[0]}) — treating as block signal", flush=True)
                 stop.set()
     def worker():
+        http_get = KeepAlive(timeout=20)
         # An empty queue does NOT mean the run is over — the feeder pauses for minutes at a time while
         # the canonical refresh owns the spindle. Exiting here strands the feeder on a full queue with
         # no consumers (observed 2026-09-13: eBay run alive 45 min, 1 thread, zero bytes). Only
@@ -181,18 +233,20 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                     record(key, "skip", 0, 0)
                 else:
                     did_net = True
-                    req = urllib.request.Request(url, headers=UA)
-                    with urllib.request.urlopen(req, timeout=20) as r:
-                        data = r.read(3_000_000)
-                    if len(data) < 512:
-                        record(key, "small", r.status, len(data))
+                    status, data = http_get.get(url, UA)
+                    if status in (404, 410):
+                        record(key, "dead", status, 0)
+                    elif status in (403, 429):
+                        record(key, "blocked", status, 0)
+                    elif status != 200:
+                        record(key, "err", status, 0)
+                    elif len(data) < 512:
+                        record(key, "small", status, len(data))
                     else:
                         os.makedirs(d, exist_ok=True)
                         with open(f + ".tmp", "wb") as fh: fh.write(data)
                         os.replace(f + ".tmp", f)
-                        record(key, "ok", 200, len(data))
-            except urllib.error.HTTPError as e:
-                record(key, "dead" if e.code in (404, 410) else ("blocked" if e.code in (403, 429) else "err"), e.code, 0)
+                        record(key, "ok", status, len(data))
             except Exception:
                 record(key, "neterr", 0, 0)
             finally:
@@ -200,6 +254,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 if did_net:  # pace only real network hits; disk-skip resumes fly through at full speed
                     dt = time.time() - t0
                     if dt < pace[0]: time.sleep(pace[0] - dt)
+        http_get.close_all()
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(workers)]
     [t.start() for t in threads]
     fed = 0; dead_host = 0
