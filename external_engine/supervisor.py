@@ -91,6 +91,20 @@ HEALERS = [
         "always_run": True,
         "enabled": os.environ.get("EXTCOMPS_HEALER_SCP_BROAD", "1") == "1" and os.path.exists(os.path.expanduser("~/mazi_scp_broad/scp_broad_watchdog.sh")),
     },
+    {
+        "name": "image_backfill",       # relaunches the comp-image download if it died before finishing
+        # Added 2026-09-13: the card-photo pass (~15 h, 337K images) was running only as a nohup from an
+        # operator shell — nothing owned it, so a crash or reboot mid-run would have left it stopped at
+        # whatever percent it reached, silently. Every other long job here is supervised; this was the gap.
+        # The script no-ops while a downloader is alive or the source is stamped complete, so ticking it
+        # often costs a pgrep. Gated at YELLOW because, unlike the SCP watchdog, it STARTS a workload
+        # rather than protecting one — never kick off heavy disk I/O on a box already under pressure.
+        "cmd": ["/bin/bash", os.path.join(ROOT, "ops/image_backfill_healer.sh")],
+        "every_ticks": 10,
+        "max_level": "YELLOW",
+        "enabled": os.environ.get("EXTCOMPS_HEALER_IMAGE_BACKFILL", "1") == "1"
+                   and os.path.exists(os.path.join(ROOT, "ops/image_backfill_healer.sh")),
+    },
 ]
 
 _stop = False
