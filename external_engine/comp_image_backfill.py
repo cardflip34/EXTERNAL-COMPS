@@ -85,7 +85,14 @@ def refresh_running() -> bool:
 # Pacing instead of blocking keeps both jobs moving, and it retires an entire bug class: nothing waits on
 # a lock any more, so image_sync (which runs INSIDE the refresh, holding that very lock) can no longer
 # deadlock against its own child. --no-yield is kept for callers that want no refresh deference at all.
-REFRESH_BACKOFF = 3.0
+REFRESH_BACKOFF = 10.0
+# 10x, not 3x. Measured 2026-09-14 while both ran: the refresh had burned 2m28s of CPU across 1h27m of
+# wall clock -- 97% blocked on I/O -- with RSS still climbing, i.e. alive but starving. A spinning disk
+# is IOPS-bound, and small-file image writes are far more IOPS-expensive than their ~80KB/s of bandwidth
+# suggests (mkdir + create + rename each), so even a modest image rate was eating a large share of the
+# spindle's random-IO budget. Racing makes BOTH jobs slow: serialise instead. Backing off hard lets the
+# refresh finish, and the moment it drops its lock this returns to full rate on its own -- which is the
+# fastest route to a finished photo library, not the slowest.
 
 
 # The Whatnot live-capture fleet shares this Mini, and bot_manager sheds capture bots once load stays
@@ -186,7 +193,10 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
             if stop.is_set(): break
             if host_of(url) in DEAD_HOSTS:
                 dead_host += 1; continue  # origin is gone — skip without spending a request or a failure slot
-            if fed % 2000 == 0:
+            # every 200, not 2000: the check is two syscalls, but at a paced 8 req/s a 2000-item interval
+            # is ~4 minutes of reaction time — long enough for load to sit over bot_manager's shed
+            # threshold and cost live capture bots before we noticed. Cheap checks should be frequent.
+            if fed % 200 == 0:
                 cap_state[0] = live_capture_pressure(cap_state[0])
                 refresh = do_yield and refresh_running()
                 mult = max(REFRESH_BACKOFF if refresh else 1.0, CAPTURE_BACKOFF if cap_state[0] else 1.0)
