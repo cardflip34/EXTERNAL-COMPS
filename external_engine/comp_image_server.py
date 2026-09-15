@@ -36,6 +36,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -66,9 +68,19 @@ def scp_key(image_url: str) -> str:
     return hashlib.sha1(image_url.encode()).hexdigest()[:20]
 
 
-def counts() -> dict:
+_COUNTS_CACHE: dict = {"at": 0.0, "val": None}
+COUNTS_TTL = 300.0   # 5 min: these move by a few thousand an hour, and the read is not cheap
+
+
+def counts(ttl: float = COUNTS_TTL) -> dict:
     """Per-source image counts read from the backfill ledgers -- never by listing the directories,
-    which hold up to 1.4M entries apiece and are as expensive to read as to write."""
+    which hold up to 1.4M entries apiece and are as expensive to read as to write.
+
+    Cached, because the ledgers are ~15MB and growing: uncached this took 21 s per call, which makes
+    /healthz useless for the polling it exists for. Image serving never touches this path."""
+    now = time.time()
+    if _COUNTS_CACHE["val"] is not None and now - _COUNTS_CACHE["at"] < ttl:
+        return _COUNTS_CACHE["val"]
     W = os.path.join(ROOT, "_backfill")
     out = {}
     for src in SOURCES:
@@ -89,6 +101,7 @@ def counts() -> dict:
         except OSError:
             pass
         out[src] = len(have)
+    _COUNTS_CACHE["at"], _COUNTS_CACHE["val"] = time.time(), out
     return out
 
 
@@ -201,6 +214,9 @@ def main() -> int:
         return 2
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
+    # Warm the counts cache off-thread. Cold it is a ~26 s ledger read, and the first person to hit
+    # /healthz should not conclude the server is hung. Images never wait on this.
+    threading.Thread(target=counts, daemon=True).start()
     sys.stderr.write(f"comp image server on http://{a.host}:{a.port}  root={ROOT}\n")
     try:
         srv.serve_forever()
