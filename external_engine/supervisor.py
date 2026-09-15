@@ -53,6 +53,20 @@ MANAGED_LANES = [
         "max_level": "YELLOW",                  # run at GREEN/YELLOW; stop after RED_STOP_TICKS consecutive RED ticks
         "enabled": os.environ.get("EXTCOMPS_LANE_SOURCES", "1") == "1",
     },
+    {
+        "name": "comp_image_server",     # read-only HTTP for comp_images/ so the front end can reach them
+        # Added 2026-09-14. The archive had ~718K photos and nothing could read them: local disk, no
+        # server. Runs HERE rather than as a LaunchAgent because a GUI agent cannot see the 6TB (TCC);
+        # the supervisor is started through ssh localhost and inherits Full Disk Access.
+        "cmd": [PY, "-u", "external_engine/comp_image_server.py"],
+        "pattern": "external_engine/comp_image_server.py",
+        "log": os.path.join(LOGDIR, "comp_image_server.out"),
+        # max_level RED: it is an idle socket until someone asks for a file, and the whole point is that
+        # it answers. Stopping the thing the front end reads because the box is briefly busy would make
+        # images vanish from the UI exactly when someone is looking.
+        "max_level": "RED",
+        "enabled": os.environ.get("EXTCOMPS_LANE_IMAGE_SERVER", "1") == "1",
+    },
 ]
 RED_STOP_TICKS = 3
 LEVEL_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}

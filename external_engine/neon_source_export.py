@@ -37,9 +37,19 @@ def main():
         cursor = json.load(open(cur_path)).get("max_scraped_at")
     except (OSError, ValueError):
         pass
+    # Compare TIMESTAMPS, not strings. str(datetime) has a space ("2026-09-09 22:30:00+00:00") where the stored
+    # cursor has a "T", and " " < "T": every later row on the cursor's own day compared as older, so the cursor
+    # stuck on the FIRST row of the newest day and re-exported that day on every refresh
+    # ("+1,540 rows appended (cursor X -> X)", 2026-09-10..14).
+    cursor_dt = datetime.fromisoformat(cursor) if cursor else None
+    if cursor_dt is not None and cursor_dt.tzinfo is None:
+        cursor_dt = cursor_dt.replace(tzinfo=timezone.utc)
     n = 0
-    max_seen = cursor
+    max_seen = cursor_dt
     with psycopg.connect(url, connect_timeout=25) as con:
+        # scraped_at is unindexed, so this reads every fanatics row before the first fetch returns; on
+        # 2026-09-14 Neon cancelled it (QueryCanceled: statement timeout) and canonical fell back to stale staging.
+        con.execute("SET statement_timeout = '20min'")
         with con.cursor(name="neon_export") as cur:  # server-side cursor: streams, bounded memory
             cur.itersize = a.batch
             q = """SELECT source_item_id, title, sold_price, sold_date::date, source_url, best_offer,
@@ -48,7 +58,7 @@ def main():
             params = [a.source]
             if cursor:
                 q += " AND scraped_at >= %s"
-                params.append(cursor)
+                params.append(cursor_dt)
             q += " ORDER BY scraped_at NULLS FIRST"
             cur.execute(q, params)
             with open(out_path, "a") as f:
@@ -65,13 +75,13 @@ def main():
                            "scraped_at": scraped.isoformat() if scraped else None}
                     f.write(json.dumps(row, default=str) + "\n")
                     n += 1
-                    if scraped and (max_seen is None or str(scraped) > str(max_seen)):
-                        max_seen = scraped.isoformat() if hasattr(scraped, "isoformat") else str(scraped)
-    if max_seen and max_seen != cursor:
+                    if scraped and (max_seen is None or scraped > max_seen):
+                        max_seen = scraped
+    if max_seen and max_seen != cursor_dt:
         tmp = cur_path + ".tmp"
-        json.dump({"max_scraped_at": str(max_seen), "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, open(tmp, "w"))
+        json.dump({"max_scraped_at": max_seen.isoformat(), "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, open(tmp, "w"))
         os.replace(tmp, cur_path)
-    print(f"[export] {a.source}: +{n:,} rows appended (cursor {cursor} -> {max_seen}) -> {out_path}")
+    print(f"[export] {a.source}: +{n:,} rows appended (cursor {cursor} -> {max_seen.isoformat() if max_seen else None}) -> {out_path}")
     return 0
 
 if __name__ == "__main__":
