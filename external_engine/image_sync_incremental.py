@@ -32,7 +32,10 @@ SETTLED = ("ok", "skip", "dead", "small")
 # not be restarted every 6 hours; it just looks like activity.
 # Remove "ebay" here once the key is sharded (<source>/<key[:2]>/<key>/) and the existing images are
 # migrated. Override with MAZI_IMAGE_SYNC_PAUSED="" to force it on.
-PAUSED_SOURCES = set(filter(None, os.environ.get("MAZI_IMAGE_SYNC_PAUSED", "ebay").split(",")))
+# UNPAUSED 2026-09-17: eBay was held back because a write into its 1.4M-sibling directory took >12 s,
+# giving 0.12 img/s and a >1,000-day backlog. comp_image_backfill now shards new writes two levels
+# deep, measured at 56 ms into that same directory -- a >200x change -- so the job is viable again.
+PAUSED_SOURCES = set(filter(None, os.environ.get("MAZI_IMAGE_SYNC_PAUSED", "").split(",")))
 
 # key/url expressions per source, matching the bulk exporter exactly
 def source_queries(rel: str) -> dict:

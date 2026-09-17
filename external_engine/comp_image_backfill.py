@@ -83,6 +83,30 @@ def host_of(url: str) -> str:
         return ""
 
 
+# SHARDING (2026-09-17). One directory per image, all siblings under one parent, stops scaling: a
+# mkdir into comp_images/ebay/ (1.4M siblings) measured >12 s against 0.2 ms into an empty directory,
+# which is why the eBay backfill managed 0.12 img/s -- over 1,000 days for its 4.2M backlog.
+# Two levels of two characters off the key give <=65k buckets, so no directory holds more than a few
+# hundred entries and inserts stay flat no matter how large the archive gets.
+#
+# NOT a migration. Writes go to the sharded path; reads check sharded FIRST and fall back to the old
+# flat path, so the ~1.5M images already on disk keep resolving untouched and nothing has to be moved
+# through the very directory that is slow. The flat directories simply stop growing.
+def shard_dir(outdir: str, key: str) -> str:
+    k = (key or "").lower()
+    return os.path.join(outdir, (k[:2] or "__"), (k[2:4] or "__"), key)
+
+
+def existing_image(outdir: str, key: str) -> str | None:
+    """Path of an already-downloaded image for this key, sharded or legacy-flat, any extension."""
+    for d in (shard_dir(outdir, key), os.path.join(outdir, key)):
+        for ext in (".jpg", ".webp", ".png", ".jpeg"):
+            p = os.path.join(d, "01" + ext)
+            if os.path.exists(p):
+                return p
+    return None
+
+
 def ext_of(url: str) -> str:
     p = url.split("?")[0].lower()
     for e in (".webp", ".jpg", ".jpeg", ".png"):
@@ -269,8 +293,9 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                 continue
             t0 = time.time(); did_net = False
             try:
-                d = os.path.join(outdir, key); f = os.path.join(d, "01" + ext_of(url))
-                if os.path.exists(f) and os.path.getsize(f) > 1024:
+                have = existing_image(outdir, key)
+                d = shard_dir(outdir, key); f = os.path.join(d, "01" + ext_of(url))
+                if have and os.path.getsize(have) > 1024:
                     record(key, "skip", 0, 0)
                 else:
                     did_net = True

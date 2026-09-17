@@ -51,16 +51,29 @@ SCP_HOST_HINT = "pricecharting.com"
 
 
 def image_path(source: str, key: str) -> str | None:
-    """Absolute path to <source>/<key>/01.<ext>, or None. Rejects anything that escapes ROOT."""
+    """Absolute path to this key's image, or None. Rejects anything that escapes ROOT.
+
+    Storage is sharded (<source>/<k0:2>/<k2:4>/<key>/) as of 2026-09-17 because a flat directory of
+    1.4M siblings made each new write take >12 s. Existing images were NOT moved, so both layouts are
+    live: sharded is checked first since that is where everything new lands, flat second so the ~1.5M
+    already on disk keep resolving. Callers -- including the front end -- see one stable URL either way,
+    which is the whole reason the layout could change without anyone having to be told."""
     if source not in SOURCES or not KEY_RE.match(key or ""):
         return None
-    base = os.path.realpath(os.path.join(ROOT, source, key))
-    if not base.startswith(os.path.realpath(ROOT) + os.sep):
-        return None                      # belt and braces: KEY_RE already bars separators
-    for ext in EXTS:
-        p = base + os.sep + "01" + ext
-        if os.path.isfile(p):
-            return p
+    k = key.lower()
+    candidates = (
+        os.path.join(ROOT, source, k[:2] or "__", k[2:4] or "__", key),   # sharded
+        os.path.join(ROOT, source, key),                                   # legacy flat
+    )
+    root_real = os.path.realpath(ROOT) + os.sep
+    for base in candidates:
+        base = os.path.realpath(base)
+        if not base.startswith(root_real):
+            continue                     # belt and braces: KEY_RE already bars separators
+        for ext in EXTS:
+            p = base + os.sep + "01" + ext
+            if os.path.isfile(p):
+                return p
     return None
 
 
