@@ -66,6 +66,16 @@ def _hours_since(ts: float | None) -> float | None:
 def build() -> dict:
     res = rg.sample(); level, reasons = rg.classify(res)
     ebay = sh.load("ebay", STORE)
+    # Every source that has a health file, not just eBay. This reported ebay alone, so when SCP -- the
+    # eBay substitute carrying ~10M rows -- fell to ~12% success for days, there was nowhere for that
+    # to show up: the watchdog said "driver alive, bridge alive" and the row count still crept up.
+    tracked = {}
+    try:
+        for fn in sorted(os.listdir(os.path.join(STORE, "source_health"))):
+            if fn.endswith(".json"):
+                tracked[fn[:-5]] = sh.load(fn[:-5], STORE)
+    except OSError:
+        tracked = {"ebay": ebay}
     store_files = [os.path.join(STORE, f) for f in ("player_comps.json", "raw_player_comps.json", "ebay_comps.json")]
     canon_dir = os.path.join(STORE, "external_store", "parquet")
     canon_newest = None
@@ -88,8 +98,10 @@ def build() -> dict:
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "host": os.uname().nodename,
         "resource": {"level": level, "reasons": reasons, **{k: res[k] for k in ("ram_reclaimable_gb", "swap_used_gb", "load1", "disk_store_free_gb", "browser_procs", "store_mounted")}},
-        "sources": {"ebay": {"state": ebay.get("state"), "since": ebay.get("state_since"), "probe_not_before": ebay.get("probe_not_before"),
-                             "last_probe": (ebay.get("last_probe") or {}).get("verdict")}},
+        "sources": {name: {"state": d.get("state"), "since": d.get("state_since"),
+                           "probe_not_before": d.get("probe_not_before"),
+                           "last_probe": (d.get("last_probe") or {}).get("verdict")}
+                    for name, d in tracked.items()},
         "processes": {name: _pgrep(pat) for name, pat in EXPECTED_PROCS.items()},
         "launchd": {lbl: _launchd(lbl) for lbl in LAUNCHD_LABELS},
         "freshness": {"per_source": {k: f"{v.get('lag_days')}d/{v.get('status')}" for k, v in (fresh.get("sources") or {}).items()},
@@ -106,8 +118,11 @@ def build() -> dict:
         warn.append("resource YELLOW")
     if not res["store_mounted"]:
         crit.append("store volume missing")
-    if ebay.get("state") in ("BLOCKED", "AUTH_REQUIRED", "CONFIG_ERROR", "OFFLINE"):
-        warn.append(f"ebay {ebay.get('state')}")
+    for name, d in tracked.items():
+        st = d.get("state")
+        if st in ("BLOCKED", "AUTH_REQUIRED", "CONFIG_ERROR", "OFFLINE", "DEGRADED"):
+            note = (d.get("note") or "").split(".")[0]
+            warn.append(f"{name} {st}" + (f" — {note}" if note else ""))
     fresh_h = hb["store"]["canonical_parquet_newest_write_h_ago"]
     legacy_h = hb["store"]["legacy_json_newest_write_h_ago"]
     newest_h = min(x for x in (fresh_h, legacy_h) if x is not None) if (fresh_h is not None or legacy_h is not None) else None
