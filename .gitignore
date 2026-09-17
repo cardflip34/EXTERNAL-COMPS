@@ -18,3 +18,10 @@ __pycache__/
 *.pyc
 .DS_Store
 .venv*/
+
+# credentials that live next to synced ops scripts — never let one slip in
+.jina_key
+*jina_key*
+*.key
+*.pem
+*_token*
