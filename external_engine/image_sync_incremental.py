@@ -37,6 +37,11 @@ SETTLED = ("ok", "skip", "dead", "small")
 # deep, measured at 56 ms into that same directory -- a >200x change -- so the job is viable again.
 PAUSED_SOURCES = set(filter(None, os.environ.get("MAZI_IMAGE_SYNC_PAUSED", "").split(",")))
 
+# Deltas larger than this are launched DETACHED instead of inline. image_sync is the last step of the
+# canonical refresh and runs while that refresh holds its lock, so anything it waits on, the refresh
+# waits on too. A routine top-up of a few thousand images is fine inline; a backlog is not.
+INLINE_MAX = int(os.environ.get("MAZI_IMAGE_SYNC_INLINE_MAX", "50000"))
+
 # key/url expressions per source, matching the bulk exporter exactly
 def source_queries(rel: str) -> dict:
     return {
@@ -115,9 +120,24 @@ def main():
             summary[src] = {"delta": n, "action": why if owned_by_bulk else ("download" if n else "none")}
             print(f"[image-sync] {src}: delta={n:,} -> {summary[src]['action']}", flush=True)
             if n and not owned_by_bulk:
-                rc = subprocess.run([PY_SYS, "-u", os.path.join(HERE, "comp_image_backfill.py"),
-                                     "--source", src, "--rate", str(a.rate), "--candidates", delta_path, "--no-yield"]).returncode
-                summary[src]["rc"] = rc
+                cmd = [PY_SYS, "-u", os.path.join(HERE, "comp_image_backfill.py"),
+                       "--source", src, "--rate", str(a.rate), "--candidates", delta_path, "--no-yield"]
+                if n > INLINE_MAX:
+                    # Hand off and return. Waiting on a multi-million-image download holds the
+                    # canonical refresh lock for DAYS -- observed 2026-09-18: refresh pid alive 1d8h,
+                    # image_sync 1d1h at 0.0% CPU, both parked behind a 4M-image eBay job. Worse, the
+                    # downloader then throttles ITSELF because it sees a refresh lock held by its own
+                    # grandparent, which is waiting on it. The refresh had already finished every
+                    # stage that matters; only this handoff was outstanding.
+                    subprocess.Popen(cmd, start_new_session=True,
+                                     stdout=open(os.path.join(W, f"detached_{src}.log"), "ab"),
+                                     stderr=subprocess.STDOUT)
+                    summary[src]["action"] = f"detached ({n:,} > {INLINE_MAX:,} inline cap)"
+                    print(f"[image-sync] {src}: {n:,} images is too big to run inline — detached, "
+                          f"not holding the refresh", flush=True)
+                else:
+                    rc = subprocess.run(cmd).returncode
+                    summary[src]["rc"] = rc
         json.dump({"at": time.strftime("%FT%TZ", time.gmtime()), "bulk_running": bulk, "sources": summary},
                   open(os.path.join(W, "image_sync_last.json"), "w"), indent=1)
     finally:
