@@ -20,7 +20,7 @@ SRC="${MAZI_IMAGE_BACKFILL_SOURCE:-scp_catalog}"
 # old slow defaults. The downloader paces itself down for the canonical refresh and for live-capture
 # load, so a high ceiling here is a ceiling, not a commitment.
 RATE="${MAZI_IMAGE_BACKFILL_RATE:-25}"
-WORKERS="${MAZI_IMAGE_BACKFILL_WORKERS:-16}"
+WORKERS="${MAZI_IMAGE_BACKFILL_WORKERS:-32}"
 ROOT="${MAZI_PROJECT_ROOT:-$HOME/whatnot-sniper}"
 W=/Volumes/MAZI_EVIDENCE_6TB/comp_images/_backfill
 STAMP="$W/complete_${SRC}.stamp"
