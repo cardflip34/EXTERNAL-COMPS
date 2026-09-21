@@ -205,21 +205,35 @@
       "from": "BLOCKED",
       "to": "BLOCKED",
       "note": "probe RED_BLOCKED http=403"
+    },
+    {
+      "at": "2026-09-20T12:46:33+00:00",
+      "type": "probe",
+      "detail": "RED_BLOCKED",
+      "http_status": 403,
+      "item_count": 0
+    },
+    {
+      "at": "2026-09-20T12:47:02+00:00",
+      "type": "state_change",
+      "from": "BLOCKED",
+      "to": "BLOCKED",
+      "note": "probe RED_BLOCKED http=403"
     }
   ],
-  "updated_at": "2026-09-17T12:45:57+00:00",
+  "updated_at": "2026-09-20T12:47:02+00:00",
   "state_since": "2026-08-19T18:05:54+00:00",
-  "probe_not_before": "2026-09-20T12:45:42+00:00",
+  "probe_not_before": "2026-09-23T12:46:11+00:00",
   "block_observed_since": "2026-07-01T00:00:00+00:00",
   "state_note": "eBay 403 soft-block ('Error Page'/'Something went wrong on our end') on Mini egress since ~2026-07-01; 100% block rate on deep-scrub nightly (15/15) and drain (~500/day) through 2026-08-19 10:52 PDT; cooldown gate MAZI_DEEP_SCRUB_SKIP_EBAY was clobbered 2026-07-16 and restored 2026-08-19 10:55 PDT (deep_scrub_runner.py). Zero-contact cooldown starts at restore time.",
   "last_probe": {
-    "at": "2026-09-17T12:45:42+00:00",
+    "at": "2026-09-20T12:46:11+00:00",
     "url": "https://www.ebay.com/sch/i.html?_from=R40&_nkw=shohei+ohtani+card&_sacat=0&LH_Sold=1&LH_Complete=1&_sop=13&_ipg=60",
     "http_status": 403,
     "verdict": "RED_BLOCKED",
     "item_count": 0,
-    "elapsed_s": 10.0,
-    "body_snippet": "SORRY Something went wrong on our end 0.ad2c2d17.1789649143.1f31991 Please go back and try again or go to eBay Homepage. Go to homepage Copyright \u00a9 1995-2026 eB",
+    "elapsed_s": 21.0,
+    "body_snippet": "SORRY Something went wrong on our end 0.6aad617.1789908372.1063c8e9 Please go back and try again or go to eBay Homepage. Go to homepage Copyright \u00a9 1995-2026 eB",
     "error": null,
     "host": "Stavross-Mac-mini.local"
   }
