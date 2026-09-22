@@ -82,7 +82,36 @@ def scp_key(image_url: str) -> str:
 
 
 _COUNTS_CACHE: dict = {"at": 0.0, "val": None}
-COUNTS_TTL = 300.0   # 5 min: these move by a few thousand an hour, and the read is not cheap
+COUNTS_TTL = 1800.0  # 30 min. The ledgers are 150MB+ and growing; this read is genuinely expensive
+                     # and the numbers move by a few thousand an hour, so freshness costs more than
+                     # it is worth.
+COUNTS_FILE = os.path.join(ROOT, "_backfill", "server_counts_cache.json")
+
+
+def _refresh_counts_async() -> None:
+    """Recompute in the background so /healthz never blocks on it."""
+    if _COUNTS_CACHE.get("refreshing"):
+        return
+    _COUNTS_CACHE["refreshing"] = True
+    def run():
+        try:
+            _compute_counts()
+        finally:
+            _COUNTS_CACHE["refreshing"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _load_cache_from_disk() -> None:
+    """Counts survive a restart. Recomputing on every start meant a 150MB ledger read racing the
+    downloader for the same spindle -- measured 2026-09-22: image serving went from 8ms to 17.6s
+    while that ran. The server restarts often (it is supervised); the read must not."""
+    try:
+        with open(COUNTS_FILE) as f:
+            d = json.load(f)
+        if isinstance(d.get("val"), dict):
+            _COUNTS_CACHE["at"], _COUNTS_CACHE["val"] = d.get("at", 0.0), d["val"]
+    except (OSError, ValueError):
+        pass
 
 
 def counts(ttl: float = COUNTS_TTL) -> dict:
@@ -92,8 +121,22 @@ def counts(ttl: float = COUNTS_TTL) -> dict:
     Cached, because the ledgers are ~15MB and growing: uncached this took 21 s per call, which makes
     /healthz useless for the polling it exists for. Image serving never touches this path."""
     now = time.time()
-    if _COUNTS_CACHE["val"] is not None and now - _COUNTS_CACHE["at"] < ttl:
+    if _COUNTS_CACHE["val"] is None:
+        # Cold: never block a request on the ledger read. Kick it off and answer honestly.
+        _refresh_counts_async()
+        return {"status": "counting", "note": "ledger scan in progress; retry shortly"}
+    if _COUNTS_CACHE["val"] is not None:
+        # STALE-WHILE-REVALIDATE. Always answer from cache, refresh behind it. A blocking recompute
+        # made /healthz time out entirely once the ledgers passed ~40MB (observed 2026-09-20: >60s,
+        # while image serving stayed at 8ms). A status endpoint that hangs is worse than one that is
+        # five minutes out of date -- it reads as "the server is down".
+        if now - _COUNTS_CACHE["at"] >= ttl:
+            _refresh_counts_async()
         return _COUNTS_CACHE["val"]
+    return _compute_counts()
+
+
+def _compute_counts() -> dict:
     W = os.path.join(ROOT, "_backfill")
     out = {}
     for src in SOURCES:
@@ -115,6 +158,13 @@ def counts(ttl: float = COUNTS_TTL) -> dict:
             pass
         out[src] = len(have)
     _COUNTS_CACHE["at"], _COUNTS_CACHE["val"] = time.time(), out
+    try:
+        tmp = COUNTS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"at": _COUNTS_CACHE["at"], "val": out}, f)
+        os.replace(tmp, COUNTS_FILE)
+    except OSError:
+        pass
     return out
 
 
@@ -229,6 +279,7 @@ def main() -> int:
     srv.daemon_threads = True
     # Warm the counts cache off-thread. Cold it is a ~26 s ledger read, and the first person to hit
     # /healthz should not conclude the server is hung. Images never wait on this.
+    _load_cache_from_disk()          # instant if a previous run left counts behind
     threading.Thread(target=counts, daemon=True).start()
     sys.stderr.write(f"comp image server on http://{a.host}:{a.port}  root={ROOT}\n")
     try:
