@@ -138,8 +138,11 @@ def main():
                 else:
                     rc = subprocess.run(cmd).returncode
                     summary[src]["rc"] = rc
+        # summary values may hold sets (source names); json can't encode those -- this crashed at the very
+        # end of every run since 2026-09-24 (work already done, only this status file was lost)
         json.dump({"at": time.strftime("%FT%TZ", time.gmtime()), "bulk_running": bulk, "sources": summary},
-                  open(os.path.join(W, "image_sync_last.json"), "w"), indent=1)
+                  open(os.path.join(W, "image_sync_last.json"), "w"), indent=1,
+                  default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o))
     finally:
         os.remove(lock)
 

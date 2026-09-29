@@ -10,6 +10,14 @@ LOG=$D/watchdog.log
 HB=$D/heartbeat.json
 ts() { date -u +%FT%TZ; }
 
+# Match the REAL process (an interpreter running the script), never a shell or tool whose
+# command line merely MENTIONS the name. 2026-09-26: `pgrep -f bridge_scp_broad_to_neon.py` matched
+# an agent's `sed ... bridge_scp_broad_to_neon.py`, so a dead bridge was not relaunched; and the old
+# stall-kill `pkill -9 -f scp_broad_scrub.py` would SIGKILL any shell that mentioned the scrub.
+BRIDGE_RE='^[^ ]*[Pp]ython[^ ]* ([^ ]*/)?tools/bridge_scp_broad_to_neon\.py( |$)'
+DRIVER_RE='^(/bin/)?bash [^ ]*/run_scp_broad\.sh$'
+SCRUB_RE='^[^ ]*[Pp]ython[^ ]* ([^ ]*/)?tools/scp_broad_scrub\.py( |$)'
+
 # --- single instance ----------------------------------------------------------
 # launchd re-fires every 300 s regardless of whether the last pass finished. A pass that
 # outlives its interval therefore STACKS. Observed 2026-09-13: 10 live instances, the oldest
@@ -33,26 +41,26 @@ BRIDGE_ALIVE=1
 # has not advanced in STALL_MIN minutes while a scrubber is alive, kill the scrubber; the driver
 # loop then spawns the next chunk on its own.
 STALL_MIN=${SCP_STALL_MIN:-25}
-if pgrep -f "scp_broad_scrub.py" >/dev/null 2>&1 && [ -f "$D/scp_broad_run.log" ]; then
+if pgrep -f "$SCRUB_RE" >/dev/null 2>&1 && [ -f "$D/scp_broad_run.log" ]; then
   LOG_AGE_MIN=$(( ( $(date +%s) - $(stat -f %m "$D/scp_broad_run.log") ) / 60 ))
   if [ "$LOG_AGE_MIN" -ge "$STALL_MIN" ]; then
     echo "[$(ts)] STALLED: run log idle ${LOG_AGE_MIN}m (>=${STALL_MIN}m) with scrubber alive -> killing scrubber" >> "$LOG"
-    pkill -9 -f "scp_broad_scrub.py" 2>/dev/null
+    pkill -9 -f "$SCRUB_RE" 2>/dev/null
     sleep 2
   fi
 fi
 
-if ! pgrep -f "run_scp_broad.sh" >/dev/null 2>&1; then
+if ! pgrep -f "$DRIVER_RE" >/dev/null 2>&1; then
   DRIVER_ALIVE=0
   echo "[$(ts)] driver DEAD -> relaunch" >> "$LOG"
   cd "$HOME/whatnot-sniper" && nohup bash "$D/run_scp_broad.sh" >/dev/null 2>&1 &
 fi
 
 # --- bridge keepalive ---------------------------------------------------------
-if ! pgrep -f "bridge_scp_broad_to_neon.py" >/dev/null 2>&1; then
+if ! pgrep -f "$BRIDGE_RE" >/dev/null 2>&1; then
   BRIDGE_ALIVE=0
   echo "[$(ts)] bridge DEAD -> relaunch" >> "$LOG"
-  cd "$HOME/whatnot-sniper" && nohup bash -c 'set -a && . ./.env.external_comps_bridge 2>/dev/null && set +a && export MAZI_DB_NO_POOL=1 PYTHONPATH=$HOME/whatnot-sniper && python3 tools/bridge_scp_broad_to_neon.py --jsonl '"$D"'/scp_broad_comps.jsonl --loop --interval 600 >> '"$D"'/scp_broad_bridge.log 2>&1' >/dev/null 2>&1 &
+  cd "$HOME/whatnot-sniper" && nohup bash -c 'set -a && . ./.env.external_comps_bridge 2>/dev/null && set +a && export MAZI_DB_NO_POOL=1 PYTHONPATH=$HOME/whatnot-sniper && python3 tools/bridge_scp_broad_to_neon.py --jsonl '"$D"'/scp_broad_comps.jsonl --loop --interval 600 --batch-insert >> '"$D"'/scp_broad_bridge.log 2>&1' >/dev/null 2>&1 &
 fi
 
 # --- heartbeat -----------------------------------------------------------------

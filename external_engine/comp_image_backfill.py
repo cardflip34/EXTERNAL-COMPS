@@ -265,6 +265,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     q: "queue.Queue[tuple[str,str]]" = queue.Queue(maxsize=2000)
     counts = collections.Counter(); recent = collections.deque(maxlen=300); consec403 = [0]
     lock = threading.Lock(); stop = threading.Event(); feed_done = threading.Event()
+    aborted = [False]   # set by ANY auto-stop, so the exit code can say "not finished" 
     def record(key, status, code, nbytes):
         with lock:
             counts[status] += 1; recent.append(status)
@@ -279,7 +280,7 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
             bad = sum(1 for s in recent if s not in ("ok", "skip"))
             if (len(recent) == 300 and bad > 120) or consec403[0] >= 8:
                 print(f"[AUTO-STOP] failure surge (bad={bad}/300, consec403={consec403[0]}) — treating as block signal", flush=True)
-                stop.set()
+                aborted[0] = True; stop.set()
     def worker():
         http_get = KeepAlive(timeout=20)
         # An empty queue does NOT mean the run is over — the feeder pauses for minutes at a time while
@@ -343,14 +344,14 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
                     print(f"[pace] {why}: {rate / mult:.1f} req/s (load {os.getloadavg()[0]:.1f})", flush=True)
                     pace[0] = want
             if fed % 20000 == 0 and free_gb() < 100:
-                print("[AUTO-STOP] 6TB free < 100 GB", flush=True); stop.set(); break
+                print("[AUTO-STOP] 6TB free < 100 GB", flush=True); aborted[0] = True; stop.set(); break
             while not stop.is_set():  # never block forever: a full queue with no live worker is a bug, not backpressure
                 try:
                     q.put((key, url), timeout=30); break
                 except queue.Full:
                     if not any(t.is_alive() for t in threads):
                         print("[ABORT] queue full but every worker is dead — exiting instead of hanging", flush=True)
-                        stop.set()
+                        aborted[0] = True; stop.set()
             if stop.is_set(): break
             fed += 1
             if limit and fed >= limit: break
@@ -359,7 +360,11 @@ def run_source(source: str, rate: float, limit: int | None, candidates: str | No
     stop.set(); [t.join(timeout=10) for t in threads]
     ledger.flush(); ledger.close()
     print(f"[{source}] done: {dict(counts)} (fed {fed:,}, dead_host_skipped {dead_host:,})", flush=True)
-    return 3 if consec403[0] >= 8 else 0
+    # Exit NON-ZERO whenever an auto-stop ended the run, not just on a 403 wall. The healer stamps a
+    # source COMPLETE on exit 0, and a failure-surge abort used to return 0 -- so on 2026-09-22 a
+    # transient network surge stopped eBay at 1.2M of 2.1M, the healer stamped it complete, and
+    # nothing relaunched it for ~14 h. "Stopped early" and "finished" must never share an exit code.
+    return 3 if (aborted[0] or consec403[0] >= 8) else 0
 
 def main():
     ap = argparse.ArgumentParser()
