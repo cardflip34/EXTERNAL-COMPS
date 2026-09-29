@@ -311,8 +311,10 @@ def main():
             vc.execute("select count(*),min(sold_date),max(sold_date) from external_transactions where source_code=%s", (code,))
             n, mn, mx = vc.fetchone()
             print("  %-14s %d rows (delta +%d)  span %s -> %s" % (code, n, n - before[code], mn, mx))
-        vc.execute("select count(*) from external_transactions")
-        print("  NEON TOTAL:", vc.fetchone()[0])
+        # estimate, not count(*): a full count of the whole table ran past the statement timeout and turned runs whose
+        # sources had all committed above into rc=1 "failures" (2026-09-28 20:06)
+        vc.execute("select reltuples::bigint from pg_class where oid = 'public.external_transactions'::regclass")
+        print("  NEON TOTAL (estimate):", vc.fetchone()[0])
         v.close()
     else:
         print("\n[dry-run] no writes. total mappable would attempt:", total_ins)

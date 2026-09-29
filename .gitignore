@@ -2,6 +2,9 @@
 *.json
 !external_engine/**/*.schema.json
 !reports/**/*.json
+# small hand-written configs the lane runs on (never data) -- tracked on purpose (were silently ignored until 09-29)
+!/fanatics_extra_*.json
+!tools/headline_seed_*.json
 *.jsonl
 *.db
 *.duckdb
