@@ -64,6 +64,11 @@ SOURCES = {
         "file": "rea_comps.json", "source_name": "Robert Edward Auctions",
         "source_type": "auction_house", "supports_sold": True,
         "supports_active": False, "obo_policy": "n/a", "vpe": True},
+    # 2026-09-29: same archive platform as REA (rea_scraper.py --house hugginsandscott); single cards only
+    "hugginsandscott": {
+        "file": "hugginsandscott_comps.json", "source_name": "Huggins & Scott Auctions",
+        "source_type": "auction_house", "supports_sold": True,
+        "supports_active": False, "obo_policy": "n/a", "vpe": True},
 }
 
 
@@ -167,7 +172,8 @@ def map_rea(c):
 
 
 MAPPERS = {"goldin": map_goldin, "tcgplayer": map_tcgplayer,
-           "myslabs": map_myslabs, "auctionreport": map_auctionreport, "rea": map_rea}
+           "myslabs": map_myslabs, "auctionreport": map_auctionreport, "rea": map_rea,
+           "hugginsandscott": map_rea}
 
 # verified_price_eligible is a GENERATED column (DB computes it: non-ebay sold
 # rows resolve True) — do NOT insert it.
@@ -205,6 +211,9 @@ def drop_goldin_gd_duplicates(rows, gd_rows):
 def bridge_source(cur, code, commit):
     cfg = SOURCES[code]
     path = os.path.join(ROOT, cfg["file"])
+    if not os.path.exists(path):            # a new source before its first scrape
+        print("  [%s] no local file yet (%s) -- skipped" % (code, cfg["file"]), flush=True)
+        return 0
     comps = json.load(open(path))
     mapper = MAPPERS[code]
     rows, skipped_map = [], 0

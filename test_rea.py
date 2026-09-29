@@ -2,6 +2,7 @@
 """Unit tests for rea_scraper pure core. Fixture is REAL markup captured from
 collectrea.com/archives on 2026-07-16. Stdlib-only."""
 import sys
+import rea_scraper
 from rea_scraper import deslug, season_to_date, parse_rea_listing, is_single_card, lots_of_auction, parse_years
 
 fails = total = 0
@@ -71,6 +72,31 @@ check(lots_of_auction(fake, 2025, "spring") == [fake[0]], "only the requested au
 check(parse_years('<select name="soldYear"><option value="">All</option><option value="2026">2026</option>'
                   '<option value="1999">1999</option></select><select><option value="2030">x</option></select>') == [2026, 1999],
       "years from the soldYear select only")
+
+print("== price outside the link segment (1 lot per page was dropped) ==")
+SPLIT = '''<a href="/archives/2025/Spring/7/lot-seven">x</a><a href="/archives/2025/Spring/8/1915-e145-cracker-jack-103-joe-jackson-psa-ex-5">img</a>
+<a href="/archives/2025/Spring/9/lot-nine">y</a><div>Lot 7 - $1,000</div><div>Lot 8 - $99,000</div><div>Lot 9 - $5,000</div>'''
+sp = {l["lot"]: l["sold_price"] for l in parse_rea_listing(SPLIT)}
+check(sp == {"7": 1000.0, "8": 99000.0, "9": 5000.0}, "each lot gets ITS Lot-N price even when the text sits elsewhere", str(sp))
+MIXED = '''<a href="/archives/2023/Fall/1/a">x</a> Lot 1 - $7,200,000 <a href="/archives/2021/Summer/1/b">y</a> Lot 1 - $6,606,296'''
+check([l["sold_price"] for l in parse_rea_listing(MIXED)] == [7200000.0, 6606296.0], "repeated lot numbers fall back to the segment")
+
+print("== Huggins & Scott (same platform) ==")
+HS = '''<div><a href="/auction/2025/Fall/1/1961-topps-dice-game-willie-mays-psa-ex-5" class="flex">
+Willie Mays Lot 1 - $156,000 </a></div>
+<div><a href="/auction/2007/March/1/incredible-christy-mathewson-single-signed-heydler-baseball">Lot 1 - $270,600</a></div>'''
+hs = parse_rea_listing(HS, "https://hugginsandscott.com", "auction")
+check(len(hs) == 2 and hs[0]["url"] == "https://hugginsandscott.com/auction/2025/Fall/1/1961-topps-dice-game-willie-mays-psa-ex-5",
+      "H&S lot links parsed with the H&S host and /auction/ prefix")
+check(abs(hs[0]["sold_price"] - 156000) < 1 and hs[1]["season"] == "March", "H&S price + month-named auction")
+check(parse_rea_listing(HS) == [], "REA defaults do not read H&S links")
+check(season_to_date("2007", "March") == "2007-03-15" and season_to_date("2022", "november") == "2022-11-15", "month auctions")
+check(not is_single_card(hs[1]["title"]), "a signed baseball is not a single card")
+rea_scraper.use_house("hugginsandscott")
+check(rea_scraper.BASE == "https://hugginsandscott.com/auction" and rea_scraper.OUT_FILE.endswith("hugginsandscott_comps.json")
+      and rea_scraper.HOUSE["id"] == "HS", "use_house switches base, files and id")
+rea_scraper.use_house("rea")
+check(rea_scraper.BASE == "https://collectrea.com/archives" and rea_scraper.OUT_FILE.endswith("rea_comps.json"), "and back")
 
 print("\n%d/%d passed, %d failed" % (total - fails, total, fails))
 sys.exit(1 if fails else 0)

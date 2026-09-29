@@ -335,6 +335,17 @@ def main():
                          # reached ~970 $50K+ lots) -- 2026-09-29
                          "--since-year", str(date.today().year - 1)], 2400)
 
+        # 8b) Huggins & Scott (24h) -- same archive platform as REA; the pgrep guard keeps the two from overlapping
+        if hours_since((state.get("last_hugginsandscott") or {}).get("at")) >= REA_EVERY_H:
+            if dry:
+                print("[dry] would run rea_scraper.py --house hugginsandscott --by-auction", flush=True)
+            elif pgrep("rea_scraper.py"):
+                print("[%s] rea_scraper already running — skip huggins & scott" % now_iso(), flush=True)
+            else:
+                run_leg(state, "hugginsandscott",
+                        [sys.executable, "-u", "rea_scraper.py", "--house", "hugginsandscott", "--by-auction",
+                         "--since-year", str(date.today().year - 1)], 2400)
+
         # 9) bridge local sources -> Neon (12h) — land tcgplayer/myslabs/AR/rea +
         # goldin incrementals continuously (idempotent ON CONFLICT DO NOTHING). Bridge env.
         if hours_since((state.get("last_local_bridge") or {}).get("at")) >= LOCAL_BRIDGE_EVERY_H:
