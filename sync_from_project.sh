@@ -39,7 +39,7 @@ for f in fanatics_recent_refresh.py fanatics_full_catalog_scraper_v3.py fanatics
          auctionreport_scraper.py tcgplayer_sold_scraper.py myslabs_scraper_v2.py rea_scraper.py bridge_local_sources_to_neon.py; do
   rsync -a "$P/$f" "$R/"
 done
-rsync -a "$P/mazi_db/scripts/import_fanatics_v3_chunks_to_neon.py" "$R/mazi_db/scripts/"
+rsync -a "$P/mazi_db/scripts/import_fanatics_v3_chunks_to_neon.py" "$P/mazi_db/scripts/external_comp_capture_spec.py" "$R/mazi_db/scripts/"
 rsync -a --include '*.sh' --include '*.py' --exclude '*' "$HOME/mazi_scp_broad/" "$R/ops/scp/"
 rsync -a "$HOME/mazi_veefriends/daily_refresh.sh" "$HOME/mazi_veefriends/extract_checklist.py" "$R/ops/veefriends/"
 rsync -a --exclude 'chrome_profile' "$HOME/mazi_ebay_session/" "$R/ops/ebay_session/"

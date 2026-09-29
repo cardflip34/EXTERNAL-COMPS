@@ -36,30 +36,29 @@ DETAIL_KEYS = {
 }
 
 
+CAPTURE_COLUMNS = (
+    ("sale_format", "text"), ("bid_count", "integer"), ("seller_id", "text"), ("shipping", "text"), ("player", "text"),
+    ("year", "text"), ("set_name", "text"), ("parallel", "text"), ("card_number", "text"), ("grade", "text"),
+    ("grading_company", "text"), ("cert_number", "text"), ("item_specifics_raw", "jsonb"), ("local_image_paths", "jsonb"),
+    ("image_sha256_paths", "jsonb"), ("image_count", "integer"), ("scraper_version", "text"),
+)
+
+
 def ensure_external_transactions_capture_columns(cur: Any) -> None:
-    """Install optional capture-spec columns on external_transactions."""
-    cur.execute(
-        """
-        ALTER TABLE public.external_transactions
-          ADD COLUMN IF NOT EXISTS sale_format text,
-          ADD COLUMN IF NOT EXISTS bid_count integer,
-          ADD COLUMN IF NOT EXISTS seller_id text,
-          ADD COLUMN IF NOT EXISTS shipping text,
-          ADD COLUMN IF NOT EXISTS player text,
-          ADD COLUMN IF NOT EXISTS year text,
-          ADD COLUMN IF NOT EXISTS set_name text,
-          ADD COLUMN IF NOT EXISTS parallel text,
-          ADD COLUMN IF NOT EXISTS card_number text,
-          ADD COLUMN IF NOT EXISTS grade text,
-          ADD COLUMN IF NOT EXISTS grading_company text,
-          ADD COLUMN IF NOT EXISTS cert_number text,
-          ADD COLUMN IF NOT EXISTS item_specifics_raw jsonb,
-          ADD COLUMN IF NOT EXISTS local_image_paths jsonb,
-          ADD COLUMN IF NOT EXISTS image_sha256_paths jsonb,
-          ADD COLUMN IF NOT EXISTS image_count integer,
-          ADD COLUMN IF NOT EXISTS scraper_version text
-        """
-    )
+    """Install optional capture-spec columns on external_transactions -- only the ones actually missing.
+
+    ALTER TABLE takes an ACCESS EXCLUSIVE lock even when every column already exists (ADD COLUMN IF NOT EXISTS still
+    locks). external_transactions is written all day (SCP bridge, eBay importers), so the ALTER could not get its lock
+    inside the callers' 10 s lock_timeout and the whole Fanatics import failed (2026-09-29 05:27 LockNotAvailable: the
+    $1K+ backfill, incl. the $8.04M Flagg, never landed). Reading the catalog takes no table lock.
+    """
+    cur.execute("SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'external_transactions'")
+    have = {r["column_name"] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
+    missing = [(c, t) for c, t in CAPTURE_COLUMNS if c not in have]
+    if missing:
+        cur.execute("ALTER TABLE public.external_transactions "
+                    + ", ".join(f"ADD COLUMN IF NOT EXISTS {c} {t}" for c, t in missing))
 
 
 def _first_text(*values: Any) -> str | None:
