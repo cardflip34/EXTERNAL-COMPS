@@ -40,7 +40,8 @@ echo $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 # one downloader at a time: two pools on one spindle thrash (0.51/s vs 6.0/s measured)
-if pgrep -f "comp_image_backfill.py" >/dev/null 2>&1; then exit 0; fi
+# real downloader only (an interpreter running it), not a shell that mentions the name (2026-09-26)
+if pgrep -f '^[^ ]*[Pp]ython[^ ]* (-u )?[^ ]*external_engine/comp_image_backfill\.py( |$)' >/dev/null 2>&1; then exit 0; fi
 
 cd "$ROOT" || exit 0
 for SRC in $SOURCES; do

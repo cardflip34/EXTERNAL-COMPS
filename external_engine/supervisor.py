@@ -77,6 +77,23 @@ LEVEL_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
 # reboot because its launchd agent wasn't loaded — this prevents a repeat without depending on launchd bootstrap).
 HEALERS = [
     {
+        "name": "whatnot_link",          # links new trusted Whatnot sales to permanent MAZI catalog ids
+        # Added 2026-09-24: the capture pipeline identifies a card but never assigns the catalog
+        # card_id the front end publishes by (0 of 50,444 trusted sales had one). Until linking lives
+        # inside the identification step, this closes the gap continuously: every tick it links
+        # whatever is new into whatnot_catalog_links, with the same scorer and provenance as the
+        # backfill, and never touches a human decision. Detached because a full pass is ~30 min; the
+        # script self-locks and also stands down while any operator-run linker is alive. YELLOW-gated:
+        # it pages the beta catalog on Small compute and should not start under load.
+        "cmd": ["/bin/bash", os.path.join(ROOT, "ops/whatnot_link_healer.sh")],
+        "every_ticks": 24,               # ticks are ~5 min apart: this is ~2 h, not 10 h as 120 would have been
+        "max_level": "YELLOW",
+        "detach": True,
+        "enabled": os.environ.get("EXTCOMPS_HEALER_WHATNOT_LINK", "1") == "1"
+                   and os.path.exists(os.path.join(ROOT, "ops/whatnot_link_healer.sh"))
+                   and os.path.exists(os.path.expanduser("~/private/beta-password")),
+    },
+    {
         "name": "canonical_refresh",  # keeps external_market_canonical_v1 tracking the live scrubs
         # Added 2026-08-25: canonicalization was manual and had drifted 4 days / ~2.4M rows behind the
         # scrapers (scrapers healthy, store stale — a silent freshness failure). The script is idempotent
