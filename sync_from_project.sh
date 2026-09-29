@@ -37,6 +37,7 @@ done
 for f in fanatics_recent_refresh.py fanatics_full_catalog_scraper_v3.py fanatics_full_catalog_scraper_v3_price_bands.py \
          fanatics_extra_title_shards.json fanatics_extra_categories.json fanatics_extra_price_shards.json goldin_scraper_v2.py \
          auctionreport_scraper.py tcgplayer_sold_scraper.py myslabs_scraper_v2.py rea_scraper.py test_rea.py \
+         test_goldin_v2.py test_goldin_untagged.py test_price_bands_dense.py \
          bridge_local_sources_to_neon.py; do
   rsync -a "$P/$f" "$R/"
 done

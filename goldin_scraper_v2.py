@@ -122,6 +122,35 @@ def is_excluded_title(title):
     return False
 
 
+# Untagged auctions (before ~2023 Goldin set no Item_Type, so the "Single Cards" filter returns nothing -- probed
+# 2026-09-29 on 2017 and 2021-22 auctions). There a lot counts as a single card only when its title has a year or a
+# vintage catalog code, a card marker (the word card, a grader, a card number, rookie/RC), and nothing that makes it
+# memorabilia, a comic, a video game, a multi-card lot or a set.
+NON_CARD_AUCTION_RE = re.compile(
+    r"\b(comics?|video games?|coins?|photography|hollywood|game[- ]used|game[- ]worn|sneakers?|wine|watch(?:es)?|"
+    r"stamps?|toys?|music|entertainment)\b", re.I)
+_YEAR_OR_CODE_RE = re.compile(r"\b(18[5-9]\d|19\d\d|20\d\d)\b|\b[TENMRDW]\d{2,3}\b")
+_CARD_MARK_RE = re.compile(r"\bcards?\b|\b(?:PSA|BGS|SGC|CGC|HGA|CSG|BVG|BCCG|GAI|KSA|ISA)\b|#\s?[A-Za-z0-9]|\brookie\b|\bRC\b",
+                           re.I)
+_NOT_A_CARD_RE = re.compile(
+    r"\b(comics?|pages|wata|vga|video games?|nintendo|sega|atari|playstation|xbox|coins?|stamps?|cabinet|photographs?|"
+    r"bats?|jerseys?|uniforms?|balls?|gloves?|helmets?|cleats|shoes|sneakers?|trophy|trophies|rings?|programs?|"
+    r"pennants?|posters?|magazines?|figures?|figurines?|toys?|funko|signed letter|handwritten letter|documents?|"
+    r"contracts?|checks?|paintings?|artwork|original art|different|album|sheets?|uncut|lithograph)\b|\(\d+\)"
+    r"|\b(?:signed|autographed|game[- ]used|game[- ]worn)\s+(?:[\w.'-]+\s+){0,3}?(?:baseball|football|basketball|puck|"
+    r"ball|bat|jersey|photo|helmet|glove|cleats|shoes)\b(?!\s+cards?\b)", re.I)
+
+
+def is_non_card_auction(title):
+    return bool(NON_CARD_AUCTION_RE.search(title or ""))
+
+
+def is_untagged_single_card(title):
+    t = title or ""
+    return (bool(_YEAR_OR_CODE_RE.search(t)) and bool(_CARD_MARK_RE.search(t))
+            and not _NOT_A_CARD_RE.search(t) and not is_excluded_title(t))
+
+
 def lot_to_comp(lot, auction, next_id):
     """Map a lots_v2 record + its auction record to a comp row.
     Returns None for unsold/priceless/undated rows. sold_date = the lot's own
@@ -307,11 +336,14 @@ def run(args):
                 kept = skipped_unsold = skipped_excl = skipped_dupe = 0
                 pages_done = 0
                 expected_total = None
+                # an untagged auction answers the Single Cards filter with nothing: re-read it unfiltered, singles by title
+                lot_filter, untagged, non_card, pg = item_type, False, False, 0
 
-                for pg in range(1, args.max_pages_per_auction + 1):
+                while pg < args.max_pages_per_auction:
+                    pg += 1
                     lots_payloads.clear()
                     url = AUCTION_PAGE_URL.format(
-                        item_type=item_type, auction_id=aid, page=pg)
+                        item_type=lot_filter, auction_id=aid, page=pg)
                     try:
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     except Exception as e:
@@ -329,6 +361,14 @@ def run(args):
                     if total is not None:
                         expected_total = total
                     if not lots:
+                        if pg == 1 and lot_filter and not args.no_untagged_fallback:
+                            if is_non_card_auction(auction.get("title", "")):
+                                print("  [page 1] no single cards and a non-card auction title — skipped")
+                                non_card = True
+                                break
+                            print("  [page 1] no 'Single Cards' tag in this auction — reading every lot, singles by title")
+                            lot_filter, untagged, pg = "", True, 0
+                            continue
                         print("  [page %d] no lots for this auction — stopping" % pg)
                         break
 
@@ -345,10 +385,15 @@ def run(args):
                         if is_excluded_title(lot.get("title", "")):
                             skipped_excl += 1
                             continue
+                        if untagged and not is_untagged_single_card(lot.get("title", "")):
+                            skipped_excl += 1
+                            continue
                         row = lot_to_comp(lot, auction, next_id)
                         if row is None:
                             skipped_unsold += 1
                             continue
+                        if untagged:
+                            row["capture_mode"] = "untagged_title_filter"
                         next_id += 1
                         new_rows.append(row)
                         kept += 1
@@ -369,7 +414,7 @@ def run(args):
 
                 comps.extend(new_rows)
                 save_comps(comps)
-                fully_covered = (
+                fully_covered = non_card or (
                     expected_total is not None
                     and pages_done * 240 >= expected_total)
                 if fully_covered and not args.auction_id:
@@ -407,6 +452,8 @@ def main():
                     help="240 lots/page; 20 pages covers auctions up to 4800 lots")
     ap.add_argument("--all-item-types", action="store_true",
                     help="drop the Item_Type=Single Cards filter")
+    ap.add_argument("--no-untagged-fallback", action="store_true",
+                    help="do not re-read auctions without the Single Cards tag (pre-~2023) unfiltered")
     ap.add_argument("--dry-run", action="store_true",
                     help="list target auctions, capture nothing")
     args = ap.parse_args()
