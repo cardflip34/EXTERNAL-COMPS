@@ -31,7 +31,7 @@ for f in veefriends_link.py veefriends_stickers.py veefriends_variants.py test_v
          correct_veefriends_beta.py ebay_veefriends_pilot.py test_ebay_veefriends_pilot.py import_ebay_veefriends_pilot.py \
          render_pages_cdp.py fanatics_title_backfill.py ebay_signed_in_sweep.py import_ebay_sweep.py build_scp_ebay_ids.py \
          bridge_scp_broad_to_neon.py test_bridge_batch.py scp_broad_scrub.py sources_supervisor.py \
-         headline_sales.py test_headline_sales.py headline_seed_2026.json; do
+         headline_sales.py test_headline_sales.py headline_seed_2026.json headline_review.py; do
   rsync -a "$P/tools/$f" "$R/tools/"
 done
 for f in fanatics_recent_refresh.py fanatics_full_catalog_scraper_v3.py fanatics_full_catalog_scraper_v3_price_bands.py \

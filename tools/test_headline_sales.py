@@ -106,5 +106,76 @@ class Seed(unittest.TestCase):
             H.date.fromisoformat(s["date"])
 
 
+class CardMatches(unittest.TestCase):
+    """Real rows from the first headline review (2026-09-29): wrong ones must fail, right ones must pass."""
+    def check(self, title, set_name, parallel, want, print_run=None, cand_run=None):
+        ok, why = H.card_matches(title, print_run, set_name, parallel, cand_run)
+        self.assertEqual(ok, want, "%s | %s | %s -> %s" % (title, set_name, parallel, why))
+
+    def test_wrong_matches_fail(self):
+        self.check("2023-24 Panini Donruss FIFA Kaboom! Black #7 Lamine Yamal Rookie Card (#1/1)", "2024 Panini Select FIFA", "Black", False)
+        self.check("2019-20 Topps Chrome Bundesliga Autographs SuperFractor #72 Erling Haaland Signed Rookie Card (#1/1)",
+                   "2019 Topps Chrome Bundesliga", "", False)
+        self.check("2021 Absolute Kaboom! Green Tom Brady 1/1 #K24 PSA 8 NM-MT", "2021 Panini Absolute Kaboom", "", False)
+        self.check("2018 Bowman Chrome Superfractor #1 Shohei Ohtani 1/1 BGS 9.5", "2019 Topps Archives", "Superfractor", False)
+        self.check("1997-98 SkyBox Metal Universe Precious Metal Gems Green #81 Kobe Bryant /10 PSA 5", "1997 Metal Universe",
+                   "Precious Metal Gems Red", False)
+        self.check("2018 Bowman Chrome Orange Refractor Shohei Ohtani ROOKIE /25 #BCRASO", "2018 Bowman Chrome Rookie Autographs",
+                   "Refractor", False)                         # plain Refractor is not the Orange /25
+
+    def test_right_matches_pass(self):
+        self.check("2018 Bowman Chrome Orange Refractor Shohei Ohtani ROOKIE /25 #BCRASO MBA BGS 9.5 GEM AUTO 10",
+                   "2018 Bowman Chrome Rookie Autographs", "Orange Refractor", True)
+        self.check("2023-24 Panini Prizm Nebula Choice Prizm #136 Victor Wembanyama Rookie Card (#1/1)", "2023 Panini Prizm",
+                   "Choice Nebula", True)
+        self.check("2012-13 Panini Prizm Gold Prizm #1 LeBron James (#07/10) - BGS GEM MINT 9.5", "2012 Panini Prizm", "Gold Prizm",
+                   True, print_run=10, cand_run=10)
+        self.check("1956 Topps Mickey Mantle (Gray Back) #135 PSA Mint 9", "1956 Topps", "Gray Back", True)
+        self.check("1952 Topps #311 Mickey Mantle - SGC NM+ 7.5", "1952 Topps", "", True)
+        self.check("1997-98 SkyBox Metal Universe Precious Metal Gems (PMG) Red #23 Michael Jordan (#039/100) - BGS",
+                   "1997 Metal Universe", "Precious Metal Gems Red", True)
+        self.check("2025 Topps Chrome Superfractor LeBron James 1/1 #127 CGC AUTH", "2025 Topps Chrome", "Superfractor", True)
+
+    def test_team_and_grade_words_are_not_parallels(self):
+        self.check("2002 Bowman Chrome #101 David Ortiz Boston Red Sox PSA 10", "2002 Bowman Chrome", "", True)
+        self.check("2003-04 Topps Chrome #111 LeBron James BGS 10 Pristine Black Label", "2003 Topps Chrome", "", True)
+
+    def test_year_must_agree(self):
+        ok, why = H.card_matches("2025 Topps Chrome SuperFractor #1 Shohei Ohtani (#1/1) - PSA GEM MT 10", None, "2024 Topps Chrome",
+                                 "Superfractor", None, 2025, 2024)
+        self.assertFalse(ok, why)
+        ok, why = H.card_matches("2023-24 Panini Prizm #136 Victor Wembanyama", None, "2023 Panini Prizm", "", None, 2023, 2023)
+        self.assertTrue(ok, why)
+
+    def test_parallel_modifiers(self):
+        self.check("2014 Panini Prizm World Cup Gold Power Prizm #12 Lionel Messi (#2/5) - BGS GEM", "2014 Panini Prizm World Cup",
+                   "Gold Prizm", False)
+        self.check("1909-11 T206 White Border Honus Wagner Sweet Caporal PSA 1", "1909 T206", "", True)
+
+    def test_product_lines_both_ways(self):
+        self.check("1975 Topps Mini #228 George Brett Rookie Card - PSA GEM MT 10", "1975 Topps", "", False)
+        self.check("1996-97 Topps Chrome #138 Kobe Bryant Rookie Card - PSA GEM MT 10", "1996 Topps", "", False)
+        self.check("2025 Topps Chrome Update Cooper Flagg #1 PSA 10", "2025 Topps Chrome", "", False)
+        self.check("2023 Donruss Optic Gold Power Lionel Messi 1/1 #1 BGS 7 NRMT", "2023 Panini Donruss", "Gold Power Optic", True)
+        self.check("2018-19 Panini Prizm Mosaic Black Prizm #68 Luka Doncic Rookie Card (#1/1)", "2018 Panini Prizm Mosaic", "Black", True)
+        self.check("1986 Fleer Sticker Michael Jordan ROOKIE #8 PSA 10 GEM MINT", "1986 Fleer Sticker", "", True)
+        self.check("1986 Fleer #57 Michael Jordan Rookie PSA 8", "1986 Fleer Sticker", "", False)
+        self.check("1997-98 Fleer Ultra Masterpiece #23P Michael Jordan 1/1 PSA 8", "1997 Ultra", "Masterpiece", True)
+
+    def test_image_variation_is_its_own_card(self):
+        self.check("2018 Topps Chrome Variation Orange Refractor Shohei Ohtani ROOKIE /25 #150 BGS 10", "2018 Topps Chrome", "Orange Refractor", False)
+
+    def test_after_market_signatures(self):
+        self.check("1986 Fleer Basketball Michael Jordan ROOKIE AUTO #57 BAS BGS 7 NRMT", "1986 Fleer", "", False)
+        self.check("1986-87 Fleer #57 Michael Jordan Signed Rookie Card - PSA EX 5, PSA/DNA NM-MT 8", "1986 Fleer", "", False)
+        self.check("2018 Bowman Chrome Shohei Ohtani ROOKIE AUTO DNA 10 #BCRASO MBA PSA 10 GEM MINT",
+                   "2018 Bowman Chrome Rookie Autographs", "", True)
+        self.check("2017 Panini Contenders Red Zone Patrick Mahomes II ROOKIE AUTO DNA 10 #303 PSA 10", "2017 Panini Contenders",
+                   "Autograph Red Zone", True)
+
+    def test_print_run_must_agree(self):
+        self.check("2012-13 Panini Prizm Gold Prizm #1 LeBron James /10", "2012 Panini Prizm", "Gold Prizm", False, print_run=10, cand_run=25)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

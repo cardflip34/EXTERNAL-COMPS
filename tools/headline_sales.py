@@ -188,31 +188,82 @@ def known_players(b, rows):
     return {k: {p for p in v if p in real} for k, v in cands.items()}
 
 
+# --- the match test (2026-09-29): a first review found ~1 in 4 "matched" rows wrong -- a Donruss Kaboom card matched to
+# Select (same player, year and #7), SuperFractor / Green 1/1 sales matched to base cards, a 2018 Bowman Chrome
+# Superfractor matched to 2019 Topps Archives. Player + year + card number is not an identity; set and parallel must agree.
+SET_STOP = {"cards", "card", "trading", "basketball", "baseball", "football", "hockey", "soccer", "the", "and", "of", "a", "set"}
+BRANDS = {"panini", "topps", "upper", "deck", "ud", "pokemon", "japanese", "english", "skybox", "fleer"}      # titles often leave these out
+PARALLEL_TOKENS = {"superfractor", "refractor", "xfractor", "gold", "red", "orange", "black", "blue", "green", "purple", "pink",
+                   "silver", "platinum", "nebula", "shimmer", "wave", "mojo", "atomic", "sapphire", "padparadscha", "emerald",
+                   "ruby", "cracked", "ice", "hyper", "power", "disco", "camo", "tiger", "zebra", "snakeskin", "laser", "lazer",
+                   "velocity", "rainbow", "sepia", "negative", "aqua", "teal", "bronze", "copper", "yellow", "lime", "magenta",
+                   "fuchsia"}                       # not "white": T206 "White Border" is the set
+# product lines: a title naming one the card's set/parallel doesn't (1975 Topps MINI vs 1975 Topps; Topps CHROME vs Topps;
+# Topps Chrome UPDATE vs Topps Chrome) is a different card with the same number
+PRODUCT_TOKENS = {"chrome", "finest", "bowman", "mini", "tiffany", "update", "traded", "optic", "select", "mosaic", "prizm",
+                  "stadium", "archives", "gallery", "draft", "national", "treasures", "contenders", "absolute", "donruss",
+                  "ultra", "metal", "exquisite", "flawless", "immaculate", "spectra", "obsidian", "origins",
+                  "chronicles", "hoops", "kaboom", "downtown", "sticker", "dynasty", "tribute", "inception", "sterling",
+                  "variation"}                                     # image variations are separate cards
+NOT_PARALLEL_RE = re.compile(r"red sox|white sox|blue jays|golden state|(?:pristine )?black label|gold label|silver label", re.I)
+SYNONYM = {"autographs": "auto", "autograph": "auto", "autos": "auto", "autographed": "auto", "rookies": "rookie", "rc": "rookie",
+           "refractors": "refractor", "prizms": "prizm", "superfractors": "superfractor", "patches": "patch"}
+
+
+def tokens(text):
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return {SYNONYM.get(w, w) for w in re.findall(r"[a-z0-9]+", t) if not w.isdigit()}
+
+
+def card_matches(title, print_run, set_name, parallel, cand_print_run, year=None, cand_year=None):
+    """(ok, reason): may this catalog card be the card in this sale title? Player and card number are checked by the
+    caller; this checks year, set, parallel and print run."""
+    if year and cand_year and int(year) != int(cand_year):
+        return False, "year %s vs catalog %s" % (year, cand_year)     # 2024 vs 2025 Topps Chrome #1 are different cards
+    tw = tokens(NOT_PARALLEL_RE.sub(" ", title))
+    sw = tokens(set_name) - SET_STOP
+    missing = sorted(sw - BRANDS - tw)
+    if missing:
+        return False, "set words not in the title: " + " ".join(missing)
+    pw = tokens(parallel) - SET_STOP
+    other = sorted((PRODUCT_TOKENS & tw) - sw - pw)
+    if other:
+        return False, "title names another product line: " + " ".join(other)
+    if ({"auto", "signed"} & tw) and "auto" not in (sw | pw):
+        return False, "signed copy of a card with no autograph version (after-market signature)"
+    if pw - tw:
+        return False, "catalog parallel not in the title: " + " ".join(sorted(pw - tw))
+    extra = sorted((PARALLEL_TOKENS & tw) - sw - pw)
+    if extra:
+        return False, "title names a parallel the card lacks: " + " ".join(extra)
+    if print_run and cand_print_run and int(print_run) != int(cand_print_run):
+        return False, "print run /%s vs /%s" % (print_run, cand_print_run)
+    return True, ""
+
+
 def resolve(b, s):
-    """MAZI ID candidates for one canonical sale. resolved = one card with the same player, year (+/-1) and card code."""
+    """MAZI ID candidates for one canonical sale. resolved = exactly ONE catalog card with the same player, year (+/-1)
+    and card number whose set and parallel also agree with the title (card_matches)."""
     if not s["player_keys"] or not s["year"]:
         return {"status": "needs_review", "why": "player or year not read from the title", "candidates": []}
-    rows = b.execute("""SELECT card_id, set_name, number, parallel, print_run FROM public.beta_catalog
+    rows = b.execute("""SELECT card_id, set_name, number, parallel, print_run, season_year FROM public.beta_catalog
                         WHERE player_key = ANY(%s) AND season_year BETWEEN %s AND %s AND visibility = 'visible' LIMIT 3000""",
                      (s["player_keys"], s["year"] - 1, s["year"] + 1)).fetchall()
-    tw = {w.lower() for w in WORD_RE.findall(s["title"])}
-    scored = []
-    for cid, sname, num, par, pr in rows:
-        if s["code_key"] and fold(num) != s["code_key"]:
-            continue
-        sw = {w.lower() for w in WORD_RE.findall(sname or "")} - {"cards", "basketball", "baseball", "football", "hockey", "soccer"}
-        pw = {w.lower() for w in WORD_RE.findall(par or "")}
-        score = len(sw & tw) + 2 * len(pw & tw) - 2 * len(pw - tw) + (1 if pr and s["print_run"] == pr else 0)
-        scored.append((score, cid, sname, num, par))
-    scored.sort(reverse=True)
-    top = [{"card_id": c, "set_name": n, "number": nb, "parallel": p, "score": sc} for sc, c, n, nb, p in scored[:3]]
     if not s["code_key"]:
-        return {"status": "needs_review", "why": "no card code in the title", "candidates": top}
-    if not top:
-        return {"status": "mint_candidate", "why": "card not in the catalog (player/year/code)", "candidates": []}
-    if len(top) == 1 or top[0]["score"] > top[1]["score"]:
-        return {"status": "resolved" if s["price"] < 1_000_000 else "resolved_needs_review", "why": "unique best match", "candidates": top}
-    return {"status": "needs_review", "why": "tie between catalog variants", "candidates": top}
+        return {"status": "needs_review", "why": "no card number in the title", "candidates": []}
+    same_number = [r for r in rows if fold(r[2]) == s["code_key"]]
+    if not same_number:
+        return {"status": "mint_candidate", "why": "card not in the catalog (player/year/card number)", "candidates": []}
+    ok, near = [], []
+    for cid, sname, num, par, pr, yr in same_number:
+        good, why = card_matches(s["title"], s.get("print_run"), sname, par, pr, s["year"], yr)
+        (ok if good else near).append({"card_id": cid, "set_name": sname, "number": num, "parallel": par, "why_not": why})
+    if len(ok) == 1:
+        return {"status": "resolved" if s["price"] < 1_000_000 else "resolved_needs_review",
+                "why": "one card matches set, number and parallel", "candidates": ok}
+    if len(ok) > 1:
+        return {"status": "needs_review", "why": "%d cards match set, number and parallel" % len(ok), "candidates": ok[:3]}
+    return {"status": "needs_review", "why": "same player/year/number, but " + near[0]["why_not"], "candidates": near[:3]}
 
 
 # ------------------------------------------------------------------------------------------------ report
