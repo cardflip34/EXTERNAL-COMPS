@@ -10,9 +10,11 @@ Keeps the multi-source scrub running autonomously (operator directive
       (it dies on DNS/network blips every few days; resume-from-state is safe)
   every AR_EVERY_H (6h):
     - auctionreport_scraper.py (RSS watermark -> idempotent)
-  weekly (Friday, once):
-    - goldin_scraper_v2.py --newest-auctions 4 (state cursor -> idempotent;
-      catches the Thu-night weekly close)
+  every GOLDIN_EVERY_H (24h):
+    - goldin_scraper_v2.py --closed-in <today-30d>..<tomorrow>: EVERY auction that
+      ended in the window and is not yet fully captured (state cursor -> idempotent).
+      Was "--newest-auctions 4" once a week, which missed 87 of 2026's auctions
+      (nearly all Elite, e.g. the June Exquisite LeBron $2.93M) -- 2026-09-29.
   every BRIDGE_EVERY_H (24h):
     - import_fanatics_v3_chunks_to_neon (own lock, byte-offset checkpoint so each
       run reads only lines added since its last commit, ON CONFLICT dedup) so
@@ -34,7 +36,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 ROOT = os.path.expanduser("~/whatnot-sniper")
 LOGDIR = os.path.expanduser("~/Library/Logs/mazi_external_comps")
@@ -47,7 +49,8 @@ ENV_FILE = os.path.join(ROOT, ".env.external_comps_bridge")
 CYCLE_SLEEP = int(os.environ.get("SRC_SUP_CYCLE_SLEEP", "600"))
 AR_EVERY_H = float(os.environ.get("SRC_SUP_AR_EVERY_H", "6"))
 BRIDGE_EVERY_H = float(os.environ.get("SRC_SUP_BRIDGE_EVERY_H", "24"))
-GOLDIN_DOW = int(os.environ.get("SRC_SUP_GOLDIN_DOW", "4"))  # 4 = Friday
+GOLDIN_EVERY_H = float(os.environ.get("SRC_SUP_GOLDIN_EVERY_H", "24"))
+GOLDIN_WINDOW_DAYS = int(os.environ.get("SRC_SUP_GOLDIN_WINDOW_DAYS", "30"))
 MAX_FANATICS_RELAUNCH_PER_DAY = int(os.environ.get("SRC_SUP_MAX_RELAUNCH", "6"))
 REFRESH_EVERY_H = float(os.environ.get("SRC_SUP_REFRESH_EVERY_H", "6"))
 TCG_EVERY_H = float(os.environ.get("SRC_SUP_TCG_EVERY_H", "12"))
@@ -225,8 +228,8 @@ def main():
     bridge_env = load_env_file(ENV_FILE)
     bridge_env["MAZI_DB_NO_POOL"] = "1"
     bridge_env["PYTHONPATH"] = ROOT
-    print("[%s] sources_supervisor start pid=%d cycle=%ds ar=%.0fh bridge=%.0fh goldin_dow=%d dry=%s" % (
-        now_iso(), os.getpid(), CYCLE_SLEEP, AR_EVERY_H, BRIDGE_EVERY_H, GOLDIN_DOW, dry), flush=True)
+    print("[%s] sources_supervisor start pid=%d cycle=%ds ar=%.0fh bridge=%.0fh goldin=%.0fh/%dd dry=%s" % (
+        now_iso(), os.getpid(), CYCLE_SLEEP, AR_EVERY_H, BRIDGE_EVERY_H, GOLDIN_EVERY_H, GOLDIN_WINDOW_DAYS, dry), flush=True)
 
     cycle = 0
     while not _stop:
@@ -249,20 +252,24 @@ def main():
                 run_leg(state, "auctionreport",
                         [sys.executable, "-u", "auctionreport_scraper.py"], 1800)
 
-        # 3) goldin weekly (Friday, once per day-of-run)
-        today = date.today()
-        last_g = (state.get("last_goldin") or {}).get("at", "")
-        if today.weekday() == GOLDIN_DOW and not last_g.startswith(today.isoformat()):
+        # 3) goldin (daily) -- every auction that ENDED in the last GOLDIN_WINDOW_DAYS and is not yet fully captured.
+        # Goldin runs Elite and specialty auctions on any day, not just the Thursday weekly; the scraper's state skips
+        # auctions already covered, so re-reading a 30-day window costs one calendar load when nothing is new.
+        if hours_since((state.get("last_goldin") or {}).get("at")) >= GOLDIN_EVERY_H:
+            today = date.today()
+            window = "%s..%s" % ((today - timedelta(days=GOLDIN_WINDOW_DAYS)).isoformat(),
+                                 (today + timedelta(days=1)).isoformat())
             if dry:
-                print("[dry] would run goldin_scraper_v2.py --newest-auctions 4", flush=True)
+                print("[dry] would run goldin_scraper_v2.py --closed-in %s" % window, flush=True)
             elif pgrep("goldin_scraper_v2"):
                 # single-instance guard: goldin_v2 has no file lock; two writers
                 # would race on goldin_comps_v2.json/state
                 print("[%s] goldin already running — skip this cycle" % now_iso(), flush=True)
             else:
+                # 200 pages x 240 lots: an Elite/Premier close can run past the old 25-page (6,000-lot) cap
                 run_leg(state, "goldin",
                         [sys.executable, "-u", "goldin_scraper_v2.py",
-                         "--newest-auctions", "4", "--max-pages-per-auction", "25"],
+                         "--closed-in", window, "--max-pages-per-auction", "200"],
                         3 * 3600)
 
         # 4) fanatics RECENT REFRESH (6h) — the catalog crawl is complete, so this
@@ -318,12 +325,15 @@ def main():
         # local JSON; the bridge leg below lands it.
         if hours_since((state.get("last_rea") or {}).get("at")) >= REA_EVERY_H:
             if dry:
-                print("[dry] would run rea_scraper.py --pages 40", flush=True)
+                print("[dry] would run rea_scraper.py --by-auction --since-year %d" % (date.today().year - 1), flush=True)
             elif pgrep("rea_scraper.py"):
                 print("[%s] rea already running — skip" % now_iso(), flush=True)
             else:
                 run_leg(state, "rea",
-                        [sys.executable, "-u", "rea_scraper.py", "--pages", "40"], 2400)
+                        [sys.executable, "-u", "rea_scraper.py", "--by-auction",
+                         # every auction of this year and last, full depth (the top-40-pages listing only ever
+                         # reached ~970 $50K+ lots) -- 2026-09-29
+                         "--since-year", str(date.today().year - 1)], 2400)
 
         # 9) bridge local sources -> Neon (12h) — land tcgplayer/myslabs/AR/rea +
         # goldin incrementals continuously (idempotent ON CONFLICT DO NOTHING). Bridge env.

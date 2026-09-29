@@ -1,0 +1,28 @@
+{
+ "_about": "2026 card sales >= $1M reported by press/trackers (GRADEx all-time sales tracker, SI Collectibles, CBS). Used (a) as the acceptance checklist for the headline_sales job and (b) as the ONLY source for sales that never touch a marketplace feed (private sales, Alt). date_precision 'month' when only the month is public. Collected 2026-09-29.",
+ "sources": {"gradex": "https://gradexmedia.com/all-time-card-sales/", "si_20260317": "https://www.si.com/collectibles/million-dollar-cards-are-exploding-again-could-2026-shatter-the-hobby-record", "cbs_flagg": "https://www.cbssports.com/nba/news/cooper-flagg-mavericks-rookie-card-record-sale/"},
+ "sales": [
+  {"date": "2026-02-15", "prec": "day", "price": 16492000, "venue": "goldin", "sale_type": "auction", "title": "1998 Pokemon Japanese Promo Illustrator Holographic Pikachu PSA 10", "source": "gradex"},
+  {"date": "2026-07-01", "prec": "month", "price": 11000000, "venue": "private", "broker": "fanatics", "sale_type": "private", "title": "2026 Topps Chrome Dual Gold MLB Logoman Patch Dual Autograph MVP Shohei Ohtani 1/1", "source": "gradex"},
+  {"date": "2026-09-25", "prec": "day", "price": 8040000, "venue": "fanatics", "sale_type": "auction", "title": "2025 Topps Chrome Update Cooper Flagg Rookie NBA Debut Patch Auto 1/1 #DPA-CF PSA 10", "source": "cbs_flagg"},
+  {"date": "2026-03-12", "prec": "day", "price": 5200000, "venue": "private", "broker": "fanatics", "sale_type": "private", "title": "2013 Bowman Chrome Draft Aaron Judge Autograph Superfractor 1/1 BGS 9.5", "source": "si_20260317"},
+  {"date": "2026-02-21", "prec": "day", "price": 5100000, "venue": "unknown", "sale_type": "auction", "title": "1909-11 T206 White Border Honus Wagner Sweet Caporal PSA 1 (Shields Family collection)", "source": "si_20260317"},
+  {"date": "2026-09-24", "prec": "day", "price": 3543000, "venue": "alt", "sale_type": "auction", "title": "2007-08 Upper Deck Exquisite Collection Dual Logoman Autographs Kobe Bryant LeBron James 1/1 PSA 8", "source": "gradex"},
+  {"date": "2026-07-01", "prec": "month", "price": 3365000, "venue": "private", "broker": "fanatics", "sale_type": "private", "title": "2018 Bowman Chrome Superfractor #1 Shohei Ohtani 1/1 BGS 9.5", "source": "gradex"},
+  {"date": "2026-04-01", "prec": "month", "price": 3150000, "venue": "alt", "sale_type": "auction", "title": "1997-98 SkyBox Metal Universe Precious Metal Gems Green #81 Kobe Bryant /10 PSA 5", "source": "gradex"},
+  {"date": "2026-06-01", "prec": "month", "price": 2928000, "venue": "goldin", "sale_type": "auction", "title": "2003-04 Upper Deck Exquisite Collection Rookie Patch Autograph #78 LeBron James /23 BGS 9.5", "source": "gradex"},
+  {"date": "2026-09-25", "prec": "day", "price": 2880000, "venue": "fanatics", "sale_type": "auction", "title": "2025 Topps Chrome Update Dylan Harper Rookie NBA Debut Patch Auto 1/1 PSA 9", "source": "cbs_flagg"},
+  {"date": "2026-06-01", "prec": "month", "price": 2562229, "venue": "goldin", "sale_type": "auction", "title": "2018 Topps Chrome Superfractor #150 Shohei Ohtani 1/1 BGS 9.5", "source": "gradex"},
+  {"date": "2026-09-25", "prec": "day", "price": 2340000, "venue": "fanatics", "sale_type": "auction", "title": "2025 Topps Chrome Update Kon Knueppel Rookie NBA Debut Patch Auto 1/1 PSA 10", "source": "cbs_flagg"},
+  {"date": "2026-03-01", "prec": "month", "price": 2160000, "venue": "fanatics", "sale_type": "auction", "title": "2025 Topps Chrome Dual Gold MLB Logo Autograph Shohei Ohtani Aaron Judge 1/1", "source": "gradex"},
+  {"date": "2026-02-01", "prec": "month", "price": 2104500, "venue": "heritage", "sale_type": "auction", "title": "1997-98 Fleer Ultra Masterpiece #23P Michael Jordan 1/1 PSA 8", "source": "gradex"},
+  {"date": "2026-04-01", "prec": "month", "price": 1950000, "venue": "private", "broker": "fanatics", "sale_type": "private", "title": "2017 Topps Dynasty Autograph Patches Blue Aaron Judge 1/1 BGS 9.5", "source": "gradex"},
+  {"date": "2026-07-01", "prec": "month", "price": 1860000, "venue": "fanatics", "sale_type": "auction", "title": "1948 Leaf #79 Jackie Robinson PSA 1 Autograph 8", "source": "gradex"},
+  {"date": "2026-07-01", "prec": "month", "price": 1800000, "venue": "fanatics", "sale_type": "live", "title": "2024 Topps Dynasty MLB Logo Autograph Shohei Ohtani 1/1 (live at Fanatics Fest NYC)", "source": "gradex"},
+  {"date": "2026-08-01", "prec": "month", "price": 1700000, "venue": "private", "broker": "alt", "sale_type": "private", "title": "2018 Panini National Treasures Rookie Patch Autograph NFL Shield Platinum Josh Allen 1/1 PSA 8.5", "source": "gradex"},
+  {"date": "2026-07-01", "prec": "month", "price": 1610000, "venue": "unknown", "sale_type": "unknown", "title": "2026 Topps Chrome Dual Logoman Autograph MVP Shohei Ohtani 1/1", "source": "gradex"},
+  {"date": "2026-05-01", "prec": "month", "price": 1350000, "venue": "fanatics", "sale_type": "auction", "title": "2025 Topps Chrome Honors MVP NFL Shield Autograph Josh Allen 1/1", "source": "gradex"},
+  {"date": "2026-05-01", "prec": "month", "price": 1260000, "venue": "fanatics", "sale_type": "auction", "title": "2025-26 Topps Chrome Autograph Superfractor LeBron James 1/1", "source": "gradex"},
+  {"date": "2026-06-01", "prec": "month", "price": 1061000, "venue": "goldin", "sale_type": "auction", "title": "2025-26 Topps Chrome MVP Gold Logoman Autograph Shai Gilgeous-Alexander 1/1", "source": "gradex"}
+ ]
+}

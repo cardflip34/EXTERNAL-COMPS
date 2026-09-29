@@ -70,14 +70,19 @@ def main():
     except Exception:
         extra_titles = []
     title_shards = [{"sort": "soldDate,desc", "title": t} for t in extra_titles]
-    # PRICE-FLOOR shards (2026-09-29): newest sales at/above a floor across ALL categories, 50 rows/page to the API's 50-page
-    # cap (2,500 rows). A Premier auction closes thousands of lots at once; the per-category 5-page window missed the
-    # $8.04M Flagg, $2.88M Harper and $2.34M Knueppel debut patches. Floors live in fanatics_extra_price_shards.json.
+    # PRICE shards (2026-09-29): newest sales in each price band across ALL categories, 50 rows/page. The API returns at
+    # most 999 rows per query (probed 09-29), so $1K+ is split into bands, each read 999 deep every refresh (each band's
+    # newest 999 reached back 4-8 days on 09-29). A Premier auction closes thousands of lots at once; the per-category
+    # 5-page window missed the $8.04M Flagg, $2.88M Harper and $2.34M Knueppel debut patches.
+    # fanatics_extra_price_shards.json: a floor (newest sales >= it) or a [lo, hi] band (hi null = no ceiling).
     try:
         price_floors = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fanatics_extra_price_shards.json")))
     except Exception:
         price_floors = []
-    price_shards = [{"sort": "soldDate,desc", "priceMin": int(f)} for f in price_floors]
+    price_shards = []
+    for f in price_floors:
+        lo, hi = f if isinstance(f, list) else (f, None)
+        price_shards.append({"sort": "soldDate,desc", "priceMin": int(lo), **({"priceMax": int(hi)} if hi is not None else {})})
     print("[refresh] %d shards (%d cats x %d types), pages/shard=%d; +%d title shards %s at %d pages" % (
         len(shards), len(cats), len(ats), a.pages, len(title_shards), extra_titles, a.title_pages), flush=True)
 

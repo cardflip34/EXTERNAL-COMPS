@@ -1,5 +1,7 @@
 # MAZI as the source of truth for headline sales ($100K+, and every $1M+) — audit and plan (2026-09-29)
 
+_Repo copy. It is also served for review from the M4 at `review/headline_sales_20260929/HEADLINE_SALES_PLAN.md`._
+
 ## What the audit found
 
 **1. Capture has holes, source by source.** Checked against the public 2026 list of $1M+ sales: at least 20, from the
@@ -88,3 +90,28 @@ or mint (C) → stage for export (D). Human review happens only for new $1M+ IDs
 - (a) OK to create the `headline_sales` table in Neon.
 - (b) Human check of IDs for $1M+ sales (recommended).
 - (c) Ask Youssef for the venue migration.
+
+## Status — 2026-09-29, after the first pass
+
+- **Fanatics:** the $1,000+ backfill finished and wrote **95,607 new sales**. It then turned out the Fanatics API
+  returns at most **999 rows per query**, whatever the page size (probed today). The band planner assumed 2,500, so
+  **151 of its 250 price bands stopped at 999**, and about **170K sales are still unread**.
+  - Fixed on the branch: bands now split to ≤ 999.
+  - The 6-hourly refresh now reads five bands ($1K–1.5K, 1.5K–2.5K, 2.5K–5K, 5K–10K, $10K+), each 999 deep. That is
+    4–8 days of sales per band, so a Premier close can't outrun it.
+  - Re-run the backfill after the merge. Already-captured sales are skipped.
+  - The 09-27 category backfills used the same wrong limit; re-run them too.
+- **Goldin:** the 2026 backfill finished. **All 87 missed auctions were captured** (`goldin_comps_v2.json` went from
+  48,952 to 81,467 comps).
+  - The weekly leg becomes daily and captures every auction that ended in the last 30 days that isn't fully captured.
+  - These sales reach Neon on the local bridge's next 12-hourly run. Its recent "failures" came only from its last
+    step, a whole-table `count(*)` that timed out after every source had already committed. Fixed: it now uses an
+    estimate.
+- **First headline report** (floor $100K, since 2025-01-01, run before the backfills reached Neon):
+  - **1,462** canonical sales from 2,162 source rows (Fanatics API 882, Neon 1,258, press seed 22).
+  - MAZI ID status: resolved 403, resolved_needs_review 10, mint_candidate 579, needs_review 470.
+  - Of the 22-sale 2026 $1M+ checklist, **8** are also in a feed we scrape and **14** appear only in the press
+    (private, Alt or unknown venue).
+  - Re-run it after the Goldin and Fanatics rows land.
+- **Code:** `cardflip34/EXTERNAL-COMPS` branch `feat/headline-sales`: the headline tool + 15 tests + seed, the daily
+  Goldin window, the Fanatics 999-row fix, and the bridge estimate.

@@ -2,11 +2,11 @@
 """fanatics_full_catalog_scraper_v3_price_bands.py -- fill what the v3 Fanatics crawl could not reach (2026-09-27).
 
 Measured 2026-09-27: Fanatics serves 5,195,626 sales; ~1.46M are in Neon.
-  * The public sales-history API serves at most 50 pages per query. v3 asked 20 rows/page (1,000 per query) and split
-    big shards by title words; 1,848 shards stayed "over_cap_after_all_splits". Categories "Other" and "Wax*" were never
-    listed at all.
-  * This tool asks 50 rows/page (the source's max -> 2,500 per query) and splits any query by WHOLE-DOLLAR PRICE BANDS
-    (priceMin inclusive, priceMax exclusive -- verified to partition exactly; decimal bounds return 0) until each fits.
+  * The public sales-history API serves at most 999 rows per query, whatever the page size (re-measured 2026-09-29; the
+    09-27 note here said 50 pages x 50 = 2,500, which was wrong). v3 asked 20 rows/page and split big shards by title
+    words; 1,848 shards stayed "over_cap_after_all_splits". Categories "Other" and "Wax*" were never listed at all.
+  * This tool asks 50 rows/page (fewer requests) and splits any query by WHOLE-DOLLAR PRICE BANDS (priceMin inclusive,
+    priceMax exclusive -- verified to partition exactly; decimal bounds return 0) until each holds <= 999 sales.
   * Rows go through the crawler's own normaliser, 1.4M-key dedup index and chunk writer; the sources_supervisor
     Fanatics->Neon bridge lands them as usual.
   * The crawler's maybe_rotate_chunk re-reads the whole current chunk for EVERY row (quadratic on the busy 6TB disk);
@@ -23,7 +23,10 @@ from pathlib import Path
 import fanatics_full_catalog_scraper_v3 as F
 
 F.PAGE_SIZE = 50                                   # the source's maximum page size
-PER_QUERY = F.SOURCE_PAGE_CAP * F.PAGE_SIZE        # 2,500 rows reachable per query
+# Rows reachable per query. The API stops at 999 rows whatever the page size (probed 2026-09-29: size 50 page 19 = 49
+# rows, page 20 = 0; size 20 page 49 = 19, page 50 = 0). This was SOURCE_PAGE_CAP * PAGE_SIZE = 2,500, so bands of
+# 1,000-2,500 sales were never split: 151 of the 250 bands in the 09-29 $1K+ sweep stopped at 999 (~170K sales unread).
+PER_QUERY = 999
 PROGRESS = F.OUT_DIR / "price_band_progress.jsonl"
 
 _counts = {}
