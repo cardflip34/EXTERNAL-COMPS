@@ -29,7 +29,9 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
+from datetime import date
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_FILE = os.path.join(_HERE, "rea_comps.json")
@@ -42,6 +44,9 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 _LOT_RE = re.compile(r'href="(/archives/(\d{4})/([^/"]+)/(\d+)/([^"]+))"')
 _IMG_RE = re.compile(r'(?:src|data-src)="(https?://[^"]*(?:rea-image|digitaloceanspaces)[^"]*)"')
 _PRICE_RE = re.compile(r"\$[\d,]{3,}")
+# Every card reads "Lot N - $X". Some cards put that text outside the link's own HTML segment, so the segment search
+# missed one lot per page (~8% of each auction, 2026-09-29; the prices it did find were all right).
+_LOT_PRICE_RE = re.compile(r"Lot\s+(\d+)\s*-\s*\$([\d,]{3,})")
 # approximate mid-season day (REA gives year+season granularity, not exact date)
 SEASONS = ("winter", "spring", "summer", "fall", "marketplace", "encore")
 # Not a single card: collections, sets, runs, sealed product, artwork, photos, documents, game-used memorabilia.
@@ -53,7 +58,32 @@ _MULTI_RE = re.compile(
 # A card: a year (1850-2099) or a vintage catalog code (T206, E90, N172, M101, R319, ...).
 _CARDISH_RE = re.compile(r"\b(18[5-9]\d|19\d\d|20\d\d)\b|\b[TENMRDW]\d{2,3}\b", re.I)
 _SEASON_MD = {"winter": "01-15", "spring": "05-01", "summer": "08-01",
-              "fall": "11-01", "marketplace": "07-01", "encore": "07-01"}
+              "fall": "11-01", "marketplace": "07-01", "encore": "07-01",
+              # Huggins & Scott names many auctions by month (2007/March, 2022/November)
+              "january": "01-15", "february": "02-15", "march": "03-15", "april": "04-15", "may": "05-15",
+              "june": "06-15", "july": "07-15", "august": "08-15", "september": "09-15", "october": "10-15",
+              "november": "11-15", "december": "12-15"}
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december")
+# Houses on the same auction-archive platform as REA (2026-09-29): /{prefix}/{year}/{auction}/{lot}/{slug} lot links
+# and per-auction listings at /{prefix}/{year}/{auction}?page=N. Huggins & Scott: robots.txt allows everything.
+HOUSES = {
+    "rea": {"host": "https://collectrea.com", "prefix": "archives", "out": "rea_comps.json", "state": "rea_state.json",
+            "source": "rea", "id": "REA", "seasons": SEASONS, "first_year": None},
+    "hugginsandscott": {"host": "https://hugginsandscott.com", "prefix": "auction", "out": "hugginsandscott_comps.json",
+                        "state": "hugginsandscott_state.json", "source": "hugginsandscott", "id": "HS",
+                        "seasons": SEASONS[:4] + MONTHS, "first_year": 2005},
+}
+HOUSE = dict(HOUSES["rea"], name="rea")
+
+
+def use_house(name):
+    """Point the scraper (listing base, output and state files) at one house."""
+    global HOUSE, BASE, OUT_FILE, STATE_FILE
+    HOUSE = dict(HOUSES[name], name=name)
+    BASE = "%s/%s" % (HOUSE["host"], HOUSE["prefix"])
+    OUT_FILE = os.path.join(_HERE, HOUSE["out"])
+    STATE_FILE = os.path.join(_HERE, HOUSE["state"])
 
 
 # ── pure core (unit-tested in test_rea.py) ───────────────────────────────────
@@ -78,28 +108,36 @@ def season_to_date(year, season):
     return "%04d-%s" % (y, md)
 
 
-def parse_rea_listing(html):
+def parse_rea_listing(html, host="https://collectrea.com", prefix="archives"):
     """Parse one archive listing page -> list of dicts
     {url, title, sold_price, year, season, lot, sold_date}. Price is the
     realized '$' amount in each lot's segment (links + prices are 1:1, in order).
     Rows without a parseable price are dropped."""
     out = []
-    matches = list(_LOT_RE.finditer(html or ""))
+    lot_re = _LOT_RE if prefix == "archives" else re.compile(
+        r'href="(/%s/(\d{4})/([^/"]+)/(\d+)/([^"]+))"' % re.escape(prefix))
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or ""))
+    pairs = _LOT_PRICE_RE.findall(text)
+    seen_n = [n for n, _ in pairs]
+    # only lot numbers that occur once: a page mixing auctions (the global /archives listing) repeats "Lot 1"
+    by_lot = {n: p for n, p in pairs if seen_n.count(n) == 1}
+    matches = list(lot_re.finditer(html or ""))
     for i, m in enumerate(matches):
         seg_end = matches[i + 1].start() if i + 1 < len(matches) else m.end() + 1200
         seg = html[m.start():seg_end]
         pm = _PRICE_RE.search(seg)
-        if not pm:
+        raw_price = ("$" + by_lot[m.group(4)]) if m.group(4) in by_lot else (pm.group(0) if pm else None)
+        if not raw_price:
             continue
         try:
-            price = float(pm.group(0).replace("$", "").replace(",", ""))
+            price = float(raw_price.replace("$", "").replace(",", ""))
         except ValueError:
             continue
         if price <= 0:
             continue
         year, season, lot, slug = m.group(2), m.group(3), m.group(4), m.group(5)
         im = _IMG_RE.search(seg)
-        out.append({"url": "https://collectrea.com" + m.group(1),
+        out.append({"url": host + m.group(1),
                     "title": deslug(slug), "sold_price": price, "year": year,
                     "season": season, "lot": lot,
                     "image_url": im.group(1) if im else "",
@@ -207,16 +245,26 @@ def run_by_auction(args):
     comps = load_comps()
     seen = set(state.get("seen_urls") or []) | {c.get("url") for c in comps}
     next_id = int(state.get("next_id") or 1)
-    years = [y for y in parse_years(_fetch(BASE)) if y >= args.since_year]
+    first = HOUSE.get("first_year")
+    all_years = list(range(date.today().year, first - 1, -1)) if first else parse_years(_fetch(BASE))
+    years = [y for y in all_years if y >= args.since_year]
     print("[by-auction] years %s" % years, flush=True)
     new = skipped = 0
     for year in years:
-        for season in SEASONS:
+        for season in HOUSE["seasons"]:
             listed = 0
             for pg in range(1, args.max_pages + 1):
-                url = "%s/%d/%s%s" % (BASE, year, season, "" if pg == 1 else "?page=%d" % pg)
+                # 100 lots a page where the house honours pageSize (REA does; Huggins & Scott ignores it: 10). Each REA
+                # listing stops at 1,000 results, so an auction past 1,000 lots is read down to its 1,000th-priced lot.
+                url = "%s/%d/%s?pageSize=100%s" % (BASE, year, season, "" if pg == 1 else "&page=%d" % pg)
                 try:
-                    lots = lots_of_auction(parse_rea_listing(_fetch(url)), year, season)
+                    lots = lots_of_auction(parse_rea_listing(_fetch(url), HOUSE["host"], HOUSE["prefix"]), year, season)
+                except urllib.error.HTTPError as e:
+                    # page 1: 404 (REA) or 500 (Huggins & Scott) = no auction by that name that year -- auction names
+                    # (seasons, and months at H&S) are probed blind
+                    if not (pg == 1 and e.code in (404, 500)):
+                        print("  [%d %s p%d] HTTP %s" % (year, season, pg, e.code), flush=True)
+                    break
                 except Exception as e:
                     print("  [%d %s p%d] fetch/parse error: %s" % (year, season, pg, str(e)[:70]), flush=True)
                     break
@@ -232,8 +280,8 @@ def run_by_auction(args):
                         continue
                     new += 1
                     if not args.dry_run:
-                        lot["comp_id"] = "REA-%d" % next_id
-                        lot["source"] = "rea"
+                        lot["comp_id"] = "%s-%d" % (HOUSE["id"], next_id)
+                        lot["source"] = HOUSE["source"]
                         comps.append(lot)
                         next_id += 1
                 if max(l["sold_price"] for l in lots) < args.min_price:
@@ -245,8 +293,8 @@ def run_by_auction(args):
                 if not args.dry_run:
                     state["seen_urls"] = sorted(u for u in seen if u); state["next_id"] = next_id
                     save_comps(comps); save_state(state)
-    print("\n[done] %s+%d new REA single-card comps, %d non-single lots skipped (total %d)" % (
-        "[dry-run] " if args.dry_run else "", new, skipped, len(comps)))
+    print("\n[done] %s+%d new %s single-card comps, %d non-single lots skipped (total %d)" % (
+        "[dry-run] " if args.dry_run else "", new, HOUSE["name"], skipped, len(comps)))
     return 0
 
 
@@ -257,10 +305,15 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--by-auction", action="store_true", help="walk every auction's own archive (full depth)")
     ap.add_argument("--since-year", type=int, default=0, help="--by-auction: only auctions from this year on")
-    ap.add_argument("--max-pages", type=int, default=400, help="--by-auction: page cap per auction (12 lots/page)")
+    ap.add_argument("--max-pages", type=int, default=600,
+                    help="--by-auction: page cap per auction (REA 100 lots/page ends by ~11; Huggins & Scott 10/page)")
     ap.add_argument("--min-price", type=float, default=0, help="--by-auction: stop an auction below this price")
     ap.add_argument("--all-lots", action="store_true", help="--by-auction: keep non-single lots too")
+    ap.add_argument("--house", choices=sorted(HOUSES), default="rea")
     args = ap.parse_args()
+    use_house(args.house)
+    if args.house != "rea" and not args.by_auction:
+        sys.exit("--house %s needs --by-auction" % args.house)
     sys.exit(run_by_auction(args) if args.by_auction else run(args))
 
 
