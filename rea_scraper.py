@@ -12,9 +12,16 @@ year+season, not exact day) — mapped to an approximate mid-season date.
 
 High-end vintage comps; reference-only. source_code 'rea'. Output rea_comps.json.
 
+The price-sorted /archives listing stops at ~100 pages (~1,200 lots, all $50K+), so --pages alone only ever
+reached the top ~970 lots (2026-09-29). --by-auction walks each auction's own archive (/archives/{year}/{season}),
+which ends naturally (2025 Spring: 84 pages, ~1,000 lots down to $2,400), for every year in the archive's
+year selector. Multi-card lots, sets, artwork and memorabilia are skipped (is_single_card) unless --all-lots.
+
 Usage:
   python3 rea_scraper.py --dry-run
   python3 rea_scraper.py --pages 40
+  python3 rea_scraper.py --by-auction                      # full archive, every auction, singles only
+  python3 rea_scraper.py --by-auction --since-year 2025    # recent auctions (the daily supervisor leg)
 """
 import argparse
 import json
@@ -36,6 +43,15 @@ _LOT_RE = re.compile(r'href="(/archives/(\d{4})/([^/"]+)/(\d+)/([^"]+))"')
 _IMG_RE = re.compile(r'(?:src|data-src)="(https?://[^"]*(?:rea-image|digitaloceanspaces)[^"]*)"')
 _PRICE_RE = re.compile(r"\$[\d,]{3,}")
 # approximate mid-season day (REA gives year+season granularity, not exact date)
+SEASONS = ("winter", "spring", "summer", "fall", "marketplace", "encore")
+# Not a single card: collections, sets, runs, sealed product, artwork, photos, documents, game-used memorabilia.
+_MULTI_RE = re.compile(
+    r"\b(collections?|lots? of|group of|complete set|near(?:ly)? complete|partial set|sets? of|sets|run of|hoard|archive|"
+    r"album|scrapbook|uncut|sheets?|packs?|box(?:es)?|cases?|wax|display|original art(?:work)?|artwork|painting|"
+    r"photographs?|letters?|documents?|contracts?|checks?|bats?|jerseys?|uniforms?|balls?|gloves?|helmets?|trophy|"
+    r"trophies|rings?|tickets?|programs?|pennants?|posters?|trio|pair|duo)\b|\(\d{2,}\)|\b\d{2,}\s+cards\b", re.I)
+# A card: a year (1850-2099) or a vintage catalog code (T206, E90, N172, M101, R319, ...).
+_CARDISH_RE = re.compile(r"\b(18[5-9]\d|19\d\d|20\d\d)\b|\b[TENMRDW]\d{2,3}\b", re.I)
 _SEASON_MD = {"winter": "01-15", "spring": "05-01", "summer": "08-01",
               "fall": "11-01", "marketplace": "07-01", "encore": "07-01"}
 
@@ -91,6 +107,24 @@ def parse_rea_listing(html):
     return out
 
 
+def is_single_card(title):
+    """True for a single card lot; False for sets, collections, sealed product, artwork and memorabilia."""
+    t = title or ""
+    return bool(_CARDISH_RE.search(t)) and not _MULTI_RE.search(t)
+
+
+def lots_of_auction(lots, year, season):
+    """Keep only lots that belong to /archives/{year}/{season} (a bad route must never pass off another listing)."""
+    return [l for l in lots if l["year"] == str(year) and l["season"].lower() == season.lower()]
+
+
+def parse_years(html):
+    """4-digit years from the archive's soldYear <select>, newest first."""
+    i = (html or "").find('name="soldYear"')
+    sel = html[i:html.find("</select>", i)] if i >= 0 else ""
+    return sorted({int(y) for y in re.findall(r'value="(\d{4})"', sel)}, reverse=True)
+
+
 # ── io / driver ──────────────────────────────────────────────────────────────
 def _fetch(url, timeout=40):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -127,7 +161,7 @@ def save_comps(c):
 def run(args):
     state = load_state()
     comps = load_comps()
-    seen = set(state.get("seen_urls") or [])
+    seen = set(state.get("seen_urls") or []) | {c.get("url") for c in comps}
     next_id = int(state.get("next_id") or 1)
     new = 0
     empty_streak = 0
@@ -156,15 +190,63 @@ def run(args):
             comps.append(lot); next_id += 1; new += 1; page_new += 1
         print("  [page %d] %d lots, +%d new" % (pg, len(lots), page_new))
         if not args.dry_run and pg % 10 == 0:
-            state["seen_urls"] = sorted(seen)[-40000:]; state["next_id"] = next_id
+            state["seen_urls"] = sorted(u for u in seen if u); state["next_id"] = next_id
             save_comps(comps); save_state(state)
         time.sleep(args.sleep)
     if args.dry_run:
         print("[dry-run] would add %d new lots" % new if new else "[dry-run] (counts above)")
         return 0
-    state["seen_urls"] = sorted(seen)[-40000:]; state["next_id"] = next_id
+    state["seen_urls"] = sorted(u for u in seen if u); state["next_id"] = next_id
     save_comps(comps); save_state(state)
     print("\n[done] +%d new REA comps (total %d)" % (new, len(comps)))
+    return 0
+
+
+def run_by_auction(args):
+    state = load_state()
+    comps = load_comps()
+    seen = set(state.get("seen_urls") or []) | {c.get("url") for c in comps}
+    next_id = int(state.get("next_id") or 1)
+    years = [y for y in parse_years(_fetch(BASE)) if y >= args.since_year]
+    print("[by-auction] years %s" % years, flush=True)
+    new = skipped = 0
+    for year in years:
+        for season in SEASONS:
+            listed = 0
+            for pg in range(1, args.max_pages + 1):
+                url = "%s/%d/%s%s" % (BASE, year, season, "" if pg == 1 else "?page=%d" % pg)
+                try:
+                    lots = lots_of_auction(parse_rea_listing(_fetch(url)), year, season)
+                except Exception as e:
+                    print("  [%d %s p%d] fetch/parse error: %s" % (year, season, pg, str(e)[:70]), flush=True)
+                    break
+                if not lots:
+                    break
+                listed += len(lots)
+                for lot in lots:
+                    if lot["url"] in seen:
+                        continue
+                    seen.add(lot["url"])
+                    if not args.all_lots and not is_single_card(lot["title"]):
+                        skipped += 1
+                        continue
+                    new += 1
+                    if not args.dry_run:
+                        lot["comp_id"] = "REA-%d" % next_id
+                        lot["source"] = "rea"
+                        comps.append(lot)
+                        next_id += 1
+                if max(l["sold_price"] for l in lots) < args.min_price:
+                    break
+                time.sleep(args.sleep)
+            if listed:
+                print("  [%d %s] %d lots listed | running: +%d singles, %d non-singles skipped" % (
+                    year, season, listed, new, skipped), flush=True)
+                if not args.dry_run:
+                    state["seen_urls"] = sorted(u for u in seen if u); state["next_id"] = next_id
+                    save_comps(comps); save_state(state)
+    print("\n[done] %s+%d new REA single-card comps, %d non-single lots skipped (total %d)" % (
+        "[dry-run] " if args.dry_run else "", new, skipped, len(comps)))
     return 0
 
 
@@ -173,8 +255,13 @@ def main():
     ap.add_argument("--pages", type=int, default=40, help="archive listing pages (12 lots/page)")
     ap.add_argument("--sleep", type=float, default=1.0)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--by-auction", action="store_true", help="walk every auction's own archive (full depth)")
+    ap.add_argument("--since-year", type=int, default=0, help="--by-auction: only auctions from this year on")
+    ap.add_argument("--max-pages", type=int, default=400, help="--by-auction: page cap per auction (12 lots/page)")
+    ap.add_argument("--min-price", type=float, default=0, help="--by-auction: stop an auction below this price")
+    ap.add_argument("--all-lots", action="store_true", help="--by-auction: keep non-single lots too")
     args = ap.parse_args()
-    sys.exit(run(args))
+    sys.exit(run_by_auction(args) if args.by_auction else run(args))
 
 
 if __name__ == "__main__":

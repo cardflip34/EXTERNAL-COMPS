@@ -2,7 +2,7 @@
 """Unit tests for rea_scraper pure core. Fixture is REAL markup captured from
 collectrea.com/archives on 2026-07-16. Stdlib-only."""
 import sys
-from rea_scraper import deslug, season_to_date, parse_rea_listing
+from rea_scraper import deslug, season_to_date, parse_rea_listing, is_single_card, lots_of_auction, parse_years
 
 fails = total = 0
 def check(c, label, d=""):
@@ -46,6 +46,31 @@ check(abs(lots[2]["sold_price"] - 1528066) < 1, "marketplace lot price", str(lot
 check(lots[2]["season"] == "Marketplace", "marketplace season parsed")
 # price association: each lot gets ITS OWN price, not the next lot's
 check(abs(lots[1]["sold_price"] - 6606296) < 1, "2nd lot price = its own (6.6M)", str(lots[1]["sold_price"]))
+
+print("== is_single_card ==")
+for title, want in [
+    ("1948 1949 Leaf 79 Jackie Robinson Rookie", True),
+    ("1909 1911 T206 White Border Honus Wagner SGC VG 3", True),
+    ("T206 Honus Wagner", True),
+    ("1952 Topps 311 Mickey Mantle PSA NM MT 8", True),
+    ("Cap Anson 1888 Goodwin Champions", True),
+    ("1948 To 1951 Bowman Scrapbook Collection (302) With 27 Hall Of Famers", False),
+    ("Dick Perez The Immortals Original Artwork Collection The Negro Leagues 29", False),
+    ("1952 Topps Complete Set (407)", False),
+    ("1927 Babe Ruth Game Used Bat PSA DNA", False),
+    ("1960s Mickey Mantle Signed Baseball", False),
+    ("1986 Fleer Basketball Wax Box", False),
+    ("Babe Ruth Signed Letter", False),
+]:
+    check(is_single_card(title) == want, "%s -> %s" % (title[:50], want))
+check(is_single_card("1960s Mickey Mantle Signed Ball") is False, "signed ball is memorabilia")
+
+print("== lots_of_auction / parse_years ==")
+fake = [{"year": "2025", "season": "Spring"}, {"year": "2024", "season": "Spring"}, {"year": "2025", "season": "Fall"}]
+check(lots_of_auction(fake, 2025, "spring") == [fake[0]], "only the requested auction's lots")
+check(parse_years('<select name="soldYear"><option value="">All</option><option value="2026">2026</option>'
+                  '<option value="1999">1999</option></select><select><option value="2030">x</option></select>') == [2026, 1999],
+      "years from the soldYear select only")
 
 print("\n%d/%d passed, %d failed" % (total - fails, total, fails))
 sys.exit(1 if fails else 0)

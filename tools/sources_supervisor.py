@@ -325,12 +325,15 @@ def main():
         # local JSON; the bridge leg below lands it.
         if hours_since((state.get("last_rea") or {}).get("at")) >= REA_EVERY_H:
             if dry:
-                print("[dry] would run rea_scraper.py --pages 40", flush=True)
+                print("[dry] would run rea_scraper.py --by-auction --since-year %d" % (date.today().year - 1), flush=True)
             elif pgrep("rea_scraper.py"):
                 print("[%s] rea already running — skip" % now_iso(), flush=True)
             else:
                 run_leg(state, "rea",
-                        [sys.executable, "-u", "rea_scraper.py", "--pages", "40"], 2400)
+                        [sys.executable, "-u", "rea_scraper.py", "--by-auction",
+                         # every auction of this year and last, full depth (the top-40-pages listing only ever
+                         # reached ~970 $50K+ lots) -- 2026-09-29
+                         "--since-year", str(date.today().year - 1)], 2400)
 
         # 9) bridge local sources -> Neon (12h) — land tcgplayer/myslabs/AR/rea +
         # goldin incrementals continuously (idempotent ON CONFLICT DO NOTHING). Bridge env.

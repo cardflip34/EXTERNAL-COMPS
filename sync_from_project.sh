@@ -36,7 +36,8 @@ for f in veefriends_link.py veefriends_stickers.py veefriends_variants.py test_v
 done
 for f in fanatics_recent_refresh.py fanatics_full_catalog_scraper_v3.py fanatics_full_catalog_scraper_v3_price_bands.py \
          fanatics_extra_title_shards.json fanatics_extra_categories.json fanatics_extra_price_shards.json goldin_scraper_v2.py \
-         auctionreport_scraper.py tcgplayer_sold_scraper.py myslabs_scraper_v2.py rea_scraper.py bridge_local_sources_to_neon.py; do
+         auctionreport_scraper.py tcgplayer_sold_scraper.py myslabs_scraper_v2.py rea_scraper.py test_rea.py \
+         bridge_local_sources_to_neon.py; do
   rsync -a "$P/$f" "$R/"
 done
 rsync -a "$P/mazi_db/scripts/import_fanatics_v3_chunks_to_neon.py" "$P/mazi_db/scripts/external_comp_capture_spec.py" "$R/mazi_db/scripts/"
