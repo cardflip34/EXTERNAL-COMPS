@@ -53,8 +53,12 @@ SEASONS = ("winter", "spring", "summer", "fall", "marketplace", "encore")
 _MULTI_RE = re.compile(
     r"\b(collections?|lots? of|group of|complete set|near(?:ly)? complete|partial set|sets? of|sets|run of|hoard|archive|"
     r"album|scrapbook|uncut|sheets?|packs?|box(?:es)?|cases?|wax|display|original art(?:work)?|artwork|painting|"
-    r"photographs?|letters?|documents?|contracts?|checks?|bats?|jerseys?|uniforms?|balls?|gloves?|helmets?|trophy|"
-    r"trophies|rings?|tickets?|programs?|pennants?|posters?|trio|pair|duo)\b|\(\d{2,}\)|\b\d{2,}\s+cards\b", re.I)
+    r"photographs?|letters?|documents?|contracts?|checks?|jerseys?|uniforms?|helmets?|trophy|"
+    r"trophies|rings?|(?<!rookie )tickets?|programs?|pennants?|posters?|trio|pair|duo|"
+    # bat/ball/glove only as objects: T206 poses ("With Bat", "Holding Bat", "Bat Off Shoulder", "Glove Showing"),
+    # the 1939-41 "Play Ball" set and W590 Ruth "King of the Bat" are cards (2026-09-29)
+    r"(?<!with )(?<!holding )(?<!the )bats?(?!\s+(?:off|on)\b)|(?<!with )(?<!holding )(?<!play )balls?|gloves?(?!\s+show))\b"
+    r"|\(\d{2,}\)|\b\d{2,}\s+cards\b", re.I)
 # A card: a year (1850-2099) or a vintage catalog code (T206, E90, N172, M101, R319, ...).
 _CARDISH_RE = re.compile(r"\b(18[5-9]\d|19\d\d|20\d\d)\b|\b[TENMRDW]\d{2,3}\b", re.I)
 _SEASON_MD = {"winter": "01-15", "spring": "05-01", "summer": "08-01",
@@ -243,7 +247,10 @@ def run(args):
 def run_by_auction(args):
     state = load_state()
     comps = load_comps()
-    seen = set(state.get("seen_urls") or []) | {c.get("url") for c in comps}
+    # seen_urls also holds lots skipped as non-singles; --recheck-skipped forgets those (keeps only the comps we hold),
+    # so a better single-card test gets another look at them
+    kept_urls = {c.get("url") for c in comps}
+    seen = kept_urls if args.recheck_skipped else set(state.get("seen_urls") or []) | kept_urls
     next_id = int(state.get("next_id") or 1)
     first = HOUSE.get("first_year")
     all_years = list(range(date.today().year, first - 1, -1)) if first else parse_years(_fetch(BASE))
@@ -310,6 +317,8 @@ def main():
     ap.add_argument("--min-price", type=float, default=0, help="--by-auction: stop an auction below this price")
     ap.add_argument("--all-lots", action="store_true", help="--by-auction: keep non-single lots too")
     ap.add_argument("--house", choices=sorted(HOUSES), default="rea")
+    ap.add_argument("--recheck-skipped", action="store_true",
+                    help="--by-auction: re-test lots earlier runs skipped as non-singles (dedupe on kept comps only)")
     args = ap.parse_args()
     use_house(args.house)
     if args.house != "rea" and not args.by_auction:
