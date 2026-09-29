@@ -82,6 +82,31 @@ def plan(base, log, floor=0):
             stack += [(mid, h), (lo, mid)]
 
 
+def dense_shards(base, lo, hi, log):
+    """A one-dollar band with more than 999 sales cannot split by price (e.g. $1,049: 4,066 sales -- fixed-price
+    listings). Split it by category, and read each part newest-first and, when it still holds more than 999,
+    oldest-first too: up to 2 x 999 per category. What is left in the middle is logged, never silently dropped."""
+    cats = [base["category"]] if base.get("category") else list(dict.fromkeys(F.CATEGORIES + extra_categories()))
+    out = []
+    for cat in cats:
+        q = {**base, "category": cat}
+        n = count(q, lo, hi)
+        if not n:
+            continue
+        if n > 2 * PER_QUERY:
+            log(f"  [dense-residual] {q} ${lo}-{hi}: {n:,} sales -- {n - 2 * PER_QUERY:,} in the middle unreachable")
+        for sort in ["soldDate,desc"] + (["soldDate,asc"] if n > PER_QUERY else []):
+            out.append({**q, "sort": sort, "priceMin": lo, "priceMax": hi})
+    return out
+
+
+def extra_categories():
+    try:
+        return json.load(open(Path(__file__).with_name("fanatics_extra_categories.json")))
+    except Exception:
+        return []
+
+
 def bases_from_unresolved(only_category):
     seen, out = set(), []
     for l in open(F.UNRESOLVED_FILE):
@@ -129,14 +154,22 @@ def main():
         if a.dry_run:
             continue
         for lo, hi, n in bands:
-            key = json.dumps({**base, "lo": lo, "hi": hi}, sort_keys=True)
+            dense = n > PER_QUERY and hi is not None and hi - lo <= 1
+            key = json.dumps({**base, "lo": lo, "hi": hi, **({"dense": 2} if dense else {})}, sort_keys=True)
             if key in done:
                 continue
-            shard = {**base, "sort": "soldDate,desc", "priceMin": lo, **({"priceMax": hi} if hi is not None else {})}
-            try:
-                st = F.scrape_shard(conn, state, shard, a.sleep, None, 10000)
-            except Exception as e:
-                log(f"  [band err] {key}: {str(e)[:160]}"); continue
+            shards = dense_shards(base, lo, hi, log) if dense else [
+                {**base, "sort": "soldDate,desc", "priceMin": lo, **({"priceMax": hi} if hi is not None else {})}]
+            st, failed = {}, False
+            for shard in shards:
+                try:
+                    part = F.scrape_shard(conn, state, shard, a.sleep, None, 10000)
+                except Exception as e:
+                    log(f"  [band err] {key} {shard}: {str(e)[:160]}"); failed = True; continue
+                for k in ("written", "dupe", "pages"):
+                    st[k] = st.get(k, 0) + part.get(k, 0)
+            if failed:
+                continue
             for k in ("written", "dupe", "pages"):
                 grand[k] += st.get(k, 0)
             state["completed"] = completed

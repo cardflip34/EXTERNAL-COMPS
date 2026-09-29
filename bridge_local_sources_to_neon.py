@@ -184,6 +184,24 @@ ON CONFLICT DO NOTHING
 """
 
 
+def drop_goldin_gd_duplicates(rows, gd_rows):
+    """An older import loaded ~16K Goldin lots under 'GD-<n>' ids, dated one day earlier than the current scraper, so
+    source_item_id never matches them and 2,770 lots landed twice (found 2026-09-29). Drop a row whose exact title and
+    realized price match a GD- row within one day."""
+    from datetime import date
+    gd = {}
+    for t, p, d in gd_rows:
+        gd.setdefault((t, round(float(p), 2)), []).append(d if isinstance(d, date) else date.fromisoformat(str(d)[:10]))
+    out = []
+    for r in rows:
+        days = gd.get((r["title"], round(float(r["sold_price"]), 2)))
+        rd = date.fromisoformat(str(r["sold_date"])[:10])
+        if days and any(abs((rd - d).days) <= 1 for d in days):
+            continue
+        out.append(r)
+    return out
+
+
 def bridge_source(cur, code, commit):
     cfg = SOURCES[code]
     path = os.path.join(ROOT, cfg["file"])
@@ -227,6 +245,12 @@ def bridge_source(cur, code, commit):
     fresh = [r for r in rows if r["source_item_id"] not in have]
     print("  [%s] %d local rows, %d already in Neon -> %d to insert"
           % (code, len(rows), len(rows) - len(fresh), len(fresh)), flush=True)
+    if code == "goldin" and fresh:
+        cur.execute("select title, sold_price, sold_date from external_transactions "
+                    "where source_code = 'goldin' and source_item_id like %s", ("GD-%",))
+        kept = drop_goldin_gd_duplicates(fresh, cur.fetchall())
+        print("  [goldin] %d already in Neon under an older 'GD-' id -> skipped" % (len(fresh) - len(kept)), flush=True)
+        fresh = kept
 
     # executemany batches get pipelined by psycopg3: ~100 round-trips instead of 90k.
     inserted = 0
