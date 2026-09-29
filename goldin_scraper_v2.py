@@ -61,6 +61,7 @@ TITLE_EXCLUSIONS = {
 }
 
 SOLD_STATUSES = {"Completed_Sold"}
+MIN_CALENDAR = 100          # Goldin's calendar lists ~490 auctions since 2012 (2026-09-29)
 
 
 # ── pure core (unit-tested in test_goldin_v2.py) ─────────────────────────────
@@ -107,12 +108,12 @@ def is_sold(lot):
     return (lot or {}).get("status") in SOLD_STATUSES
 
 
-def is_excluded_title(title):
+def is_excluded_title(title, words=None):
     """v1-compatible non-singles guard: word/phrase blocklist, case-insensitive.
     Multi-word phrases match as substrings; single words match on word
     boundaries ('lot' must not kill 'Charlotte Hornets')."""
     tl = (title or "").lower()
-    for excl in TITLE_EXCLUSIONS:
+    for excl in (TITLE_EXCLUSIONS if words is None else words):
         if " " in excl:
             if excl in tl:
                 return True
@@ -133,8 +134,11 @@ _YEAR_OR_CODE_RE = re.compile(r"\b(18[5-9]\d|19\d\d|20\d\d)\b|\b[TENMRDW]\d{2,3}
 _CARD_MARK_RE = re.compile(r"\bcards?\b|\b(?:PSA|BGS|SGC|CGC|HGA|CSG|BVG|BCCG|GAI|KSA|ISA)\b|#\s?[A-Za-z0-9]|\brookie\b|\bRC\b",
                            re.I)
 _NOT_A_CARD_RE = re.compile(
-    r"\b(comics?|pages|wata|vga|video games?|nintendo|sega|atari|playstation|xbox|coins?|stamps?|cabinet|photographs?|"
-    r"bats?|jerseys?|uniforms?|balls?|gloves?|helmets?|cleats|shoes|sneakers?|trophy|trophies|rings?|programs?|"
+    # brand/nickname words stay: N284 Buchner "Gold Coin", 1939-41 "Play Ball", W590 Ruth "King of the Bat"
+    r"\b(comics?|pages|wata|vga|video games?|nintendo|sega|atari|playstation|xbox|(?<!gold )coins?|stamps?|cabinet|photographs?|"
+    # bat/ball/glove only as objects: T206 poses read "With Bat", "Holding Bat", "Bat Off Shoulder", "Glove Showing"
+    r"(?<!with )(?<!holding )(?<!the )bats?(?!\s+(?:off|on)\b)|jerseys?|uniforms?|(?<!with )(?<!holding )(?<!play )balls?|"
+    r"gloves?(?!\s+show)|helmets?|cleats|shoes|sneakers?|trophy|trophies|rings?|programs?|lobby cards?|giclee|canvas|"
     r"pennants?|posters?|magazines?|figures?|figurines?|toys?|funko|signed letter|handwritten letter|documents?|"
     r"contracts?|checks?|paintings?|artwork|original art|different|album|sheets?|uncut|lithograph)\b|\(\d+\)"
     r"|\b(?:signed|autographed|game[- ]used|game[- ]worn)\s+(?:[\w.'-]+\s+){0,3}?(?:baseball|football|basketball|puck|"
@@ -145,10 +149,14 @@ def is_non_card_auction(title):
     return bool(NON_CARD_AUCTION_RE.search(title or ""))
 
 
+# the v1 blocklist minus "checklist": a checklist card (1957 Topps Checklist, T3 "Checklist Back") is a single card
+_UNTAGGED_EXCLUSIONS = TITLE_EXCLUSIONS - {"checklist"}
+
+
 def is_untagged_single_card(title):
     t = title or ""
     return (bool(_YEAR_OR_CODE_RE.search(t)) and bool(_CARD_MARK_RE.search(t))
-            and not _NOT_A_CARD_RE.search(t) and not is_excluded_title(t))
+            and not _NOT_A_CARD_RE.search(t) and not is_excluded_title(t, _UNTAGGED_EXCLUSIONS))
 
 
 def lot_to_comp(lot, auction, next_id):
@@ -292,13 +300,29 @@ def run(args):
             # NB: must pump the Playwright event loop (wait_for_timeout), NOT
             # time.sleep() — sleeping blocks sync-mode event dispatch and the
             # response handler would never fire.
-            deadline = time.time() + 30
-            while time.time() < deadline and not auction_payloads:
-                page.wait_for_timeout(1000)
-            auctions_by_id = merge_auction_lists(auction_payloads)
+            # The site fires several /api/auctions requests and the first to land can be a short list (11 auctions
+            # instead of 491, 2026-09-29), which silently made a backfill find nothing. Listen until the merged
+            # calendar stops growing; reload once if it is still short; give up loudly rather than run on a stub.
+            for attempt in (1, 2):
+                if attempt == 2:
+                    auction_payloads.clear()
+                    page.goto(BUY_URL, wait_until="domcontentloaded", timeout=60000)
+                deadline = time.time() + 30
+                while time.time() < deadline and not auction_payloads:
+                    page.wait_for_timeout(1000)
+                last, stable = -1, 0
+                while time.time() < deadline + 20 and stable < 5:
+                    n = len(merge_auction_lists(auction_payloads))
+                    stable = stable + 1 if n == last else 0
+                    last = n
+                    page.wait_for_timeout(1000)
+                auctions_by_id = merge_auction_lists(auction_payloads)
+                if len(auctions_by_id) >= MIN_CALENDAR:
+                    break
+                print("  calendar short (%d auctions) — attempt %d" % (len(auctions_by_id), attempt))
             print("  auctions on calendar: %d" % len(auctions_by_id))
-            if not auctions_by_id:
-                print("  FATAL: no /api/auctions payload captured")
+            if len(auctions_by_id) < MIN_CALENDAR:
+                print("  FATAL: auction calendar incomplete (%d < %d)" % (len(auctions_by_id), MIN_CALENDAR))
                 return 1
 
             if args.auction_id:
@@ -382,10 +406,10 @@ def run(args):
                         if not is_sold(lot):
                             skipped_unsold += 1
                             continue
-                        if is_excluded_title(lot.get("title", "")):
-                            skipped_excl += 1
-                            continue
-                        if untagged and not is_untagged_single_card(lot.get("title", "")):
+                        # untagged auctions: the title test alone (it carries the blocklist minus "checklist");
+                        # tagged auctions: the v1 blocklist on top of Goldin's Single Cards filter, as before
+                        if (not is_untagged_single_card(lot.get("title", ""))) if untagged \
+                                else is_excluded_title(lot.get("title", "")):
                             skipped_excl += 1
                             continue
                         row = lot_to_comp(lot, auction, next_id)

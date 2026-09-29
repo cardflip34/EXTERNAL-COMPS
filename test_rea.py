@@ -65,6 +65,12 @@ for title, want in [
 ]:
     check(is_single_card(title) == want, "%s -> %s" % (title[:50], want))
 check(is_single_card("1960s Mickey Mantle Signed Ball") is False, "signed ball is memorabilia")
+for title in ("1941 Play Ball 8 Mel Ott Sgc Nm 7", "T206 Fred Clarke Holding Bat Psa Nm 7", "1909 1911 T206 Joe Tinker Bat Off Shoulder Psa Vg 3",
+              "1909 1911 T206 Vic Willis With Bat Psa Vg Ex 4", "1925 W590 Babe Ruth King Of The Bat Psa Authentic",
+              "2000 Playoff Contenders Rookie Ticket Autograph 144 Tom Brady Bgs 8"):
+    check(is_single_card(title), "card kept: " + title[:44])
+for title in ("1927 Babe Ruth Game Used Bat PSA DNA", "Yankees Team Signed Baseball Bat", "1932 World Series Ticket Stub Babe Ruth Called Shot"):
+    check(not is_single_card(title), "memorabilia skipped: " + title[:44])
 
 print("== lots_of_auction / parse_years ==")
 fake = [{"year": "2025", "season": "Spring"}, {"year": "2024", "season": "Spring"}, {"year": "2025", "season": "Fall"}]

@@ -20,6 +20,15 @@ SINGLES = [  # real titles from untagged Goldin auctions (2017, 2021) plus commo
     "1999 Pokemon Base Set 1st Edition Holo Charizard #4 PSA GEM MT 10",
     "1952 Topps #311 Mickey Mantle Autographed Baseball Card - PSA/DNA",
     "2019 Topps Chrome Printing Plate 1/1 Vladimir Guerrero Jr. Rookie",
+    # real titles the first filter skipped (2013 April auction spot check): T206 poses and checklist cards
+    "T206 Fred Clarke (Holding Bat) PSA NM 7",
+    "T206 Joe Tinker Bat Off Shoulder (Old Mill) PSA VG 3",
+    "T206 Vic Willis With Bat (Polar Bear) PSA 4 VG-EX",
+    "1911 T3 Turkey Red Addie Joss PSA Authentic (Checklist Back)",
+    "1957 Topps Checklist 1/2 (Big Blony) PSA NM-MT 8",
+    "1887 N284 Gold Coin Charles Comiskey PSA FR 1.5",
+    "1941 Play Ball #8 Mel Ott SGC NM 7",
+    "1925 W590 Babe Ruth King of the Bat PSA Authentic",
 ]
 NOT_SINGLES = [
     '1959 Fleer "Three Stooges" PSA MINT 9 Collection (38 Different)',
@@ -31,6 +40,16 @@ NOT_SINGLES = [
     "2020 Panini Prizm Justin Herbert Rookie Card Lot (5)",
     "1986 Fleer Basketball Unopened Wax Box",
     "Tom Brady Signed Helmet",
+    # real titles the first filter kept, and memorabilia around the new bat/ball exceptions
+    "Impressive 1962 Safe at Home Lobby Card Signed by Mantle, Maris and Tresh.",
+    "1995 World Champion Atlanta Braves Signed Billy Lopa Giclee on Canvas (21 Signatures)  #41/50",
+    "Yankee Legends Signed Baseball Bat with 12 Signatures (PSA 9)",
+    "1927 Babe Ruth Louisville Slugger Game Bat PSA/DNA",
+    "Lot of Ten  (10) Ted Williams Signed 16x20 Photos  PSA/DNA and Williams Hologram (HOF)",
+    "1949 Bowman Baseball Collection PSA NM 7 (18 diff.)",
+    "1926 W512 Baseball Uncut Strip with Babe Ruth PSA Authentic",
+    "Ty Cobb Signed Check PSA MINT 9",
+    "1893 $20 Gold Coin PCGS MS 62",
 ]
 
 
@@ -49,6 +68,11 @@ class UntaggedTitleTest(unittest.TestCase):
             self.assertTrue(G.is_non_card_auction(t), t)
         for t in ("2021 November Monthly Auction", "2022 Winter Goldin Elite Session 1", "2017 - Great American Trading Card Auction Ending April 1"):
             self.assertFalse(G.is_non_card_auction(t), t)
+
+
+class TaggedPathUnchanged(unittest.TestCase):
+    def test_v1_blocklist_still_drops_checklists_on_tagged_auctions(self):
+        self.assertTrue(G.is_excluded_title("1957 Topps Checklist 1/2 (Big Blony) PSA NM-MT 8"))
 
 
 class GdDuplicateGuard(unittest.TestCase):
