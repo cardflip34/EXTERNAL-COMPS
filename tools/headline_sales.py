@@ -36,7 +36,10 @@ YEAR_RE = re.compile(r"\b(19[0-9]{2}|20[0-4][0-9])(?:[-/](\d{2}))?\b")
 CODE_RE = re.compile(r"#\s*([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)")
 SERIAL_RE = re.compile(r"(?<![#\w])(\d{1,3})\s*/\s*(\d{1,4})\b")   # "1/1", "05/10" -- never a card number: "#78 /99"
 RUN_RE = re.compile(r"/\s*(\d{1,4})\b")                                  # "/23", "#78/99" (no serial): print run only
-GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CGC)\s*(?:GEM\s*(?:MT|MINT)|MINT|NM-MT\+?|PRISTINE|AUTH(?:ENTIC)?)?\s*(10|9\.5|9|8\.5|8|7\.5|7|6|5|4|3|2|1(?:\.5)?)\b", re.I)
+# up to three descriptor words between grader and number: "SGC NM+ 7.5", "PSA EX-MT 6", "PSA Good 2", "BGS GEM MINT 9.5"
+# (the first version stopped at vintage descriptors and held 44 real $100K+ sales as "no grade", 2026-09-29)
+GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CGC)\s*(?:[A-Za-z][A-Za-z+\-]*\.?\s+){0,3}"
+                      r"(10|9\.5|9|8\.5|8|7\.5|7|6\.5|6|5\.5|5|4\.5|4|3\.5|3|2\.5|2|1\.5|1)(?![\d.]*\d)", re.I)
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z.'\-]*")
 PARALLEL_WORDS = {"superfractor", "gold", "red", "orange", "black", "blue", "green", "purple", "pink", "logoman", "logo", "shield",
                   "platinum", "masterpiece", "precious", "gems", "refractor", "padparadscha", "rookie", "patch", "auto", "autograph",
