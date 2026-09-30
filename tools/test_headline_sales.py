@@ -34,6 +34,15 @@ class ParseTitle(unittest.TestCase):
         p = H.parse_title("1997-98 Metal Universe Precious Metal Gems Green 05/10 #81 Kobe Bryant PSA 5")
         self.assertEqual((p["serial"], p["print_run"], p["code"], p["grade"]), ("05/10", 10, "81", "PSA 5"))
 
+    def test_vintage_grade_descriptors(self):
+        for title, want in [("1952 Topps #311 Mickey Mantle - SGC NM+ 7.5", "SGC 7.5"), ("1952 Topps Mickey Mantle #311 PSA EX-MT 6.", "PSA 6"),
+                            ("1952 Topps Mickey Mantle #311 PSA Good 2.", "PSA 2"), ("1997-98 Metal Universe PMG #23 Jordan (#018/50) - BGS NM 7", "BGS 7"),
+                            ("Kobe Bryant Rookie - PSA EX 5, PSA/DNA NM-MT 8", "PSA 5"), ("2003 Topps Chrome LeBron BGS GEM MINT 9.5", "BGS 9.5"),
+                            ("1933 Goudey Ruth PSA EX-MT+ 6.5", "PSA 6.5"), ("Flagg Debut Patch 1/1 #DPA-CF PSA 10", "PSA 10")]:
+            self.assertEqual(H.parse_title(title)["grade"], want, title)
+        for title in ("2025 Topps Chrome Superfractor LeBron James 1/1 #127 CGC AUTH", "PMG Red #23 Jordan (#063/100) - PSA Authentic/Altered"):
+            self.assertIsNone(H.parse_title(title)["grade"], title)
+
     def test_nothing_to_read(self):
         p = H.parse_title("Shohei Ohtani Logoman")
         self.assertEqual((p["year"], p["code"], p["serial"], p["print_run"], p["grade"]), (None, None, None, None, None))
