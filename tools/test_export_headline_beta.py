@@ -44,6 +44,21 @@ class Build(unittest.TestCase):
         rows, held = E.build([s], set())
         self.assertEqual((rows, held["BGS Black Label (its own grade bucket is not decided yet)"]), ([], 1))
 
+    def test_buy_now_listing_is_held(self):
+        s = sale(); s["sources"][0].update(src="neon", venue="goldin", url="https://www.fanaticscollect.com/buy-now/abc")
+        rows, held = E.build([s], set())
+        self.assertEqual((rows, held["Fanatics buy-now listing (an asking price, not a sale)"]), ([], 1))
+
+    def test_corroboration(self):
+        row = {"price": 900_000.0}
+        self.assertFalse(E.corroborated(row, [310.0, 280.0], []))                 # Garchomp LV.X: hundreds of dollars
+        self.assertTrue(E.corroborated(row, [], [120_000.0]))                     # a parallel of the same card at 1/7.5
+        self.assertTrue(E.corroborated({"price": 2_333_250.0}, [250_000.0], []))  # 1952 Mantle PSA 8 vs PSA 7 sales
+        self.assertFalse(E.corroborated(row, [], []))                             # nothing at all
+        self.assertEqual(E.family("mazi:bk:2023-panini-prizm:victor-wembanyama:136~choice-nebula"),
+                         "mazi:bk:2023-panini-prizm:victor-wembanyama:136")
+        self.assertEqual(E.family("ptcgio:dp5-97"), "ptcgio:dp5-97")
+
     def test_not_eligible_at_all(self):
         rows, held = E.build([sale(price=99_000), sale(status="needs_review"), sale(status="mint_candidate"),
                               sale(venue="unknown")], set())

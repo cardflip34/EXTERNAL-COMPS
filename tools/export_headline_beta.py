@@ -39,7 +39,20 @@ HOUSE = {"goldin": "Goldin", "fanatics": "Fanatics Collect", "heritage": "Herita
 BASIS = {"goldin": "price realized incl. buyer's premium", "fanatics": "sale price as listed in Fanatics Collect's sales history",
          "heritage": "price realized as reported", "rea": "price realized as listed by REA", "alt": "sale price as reported",
          "ebay": "sold price", "hugginsandscott": "price realized as listed"}
-MIN_PRICE, FENCE = 100_000, 25.0
+MIN_PRICE, FENCE, CORROBORATE = 100_000, 25.0, 10.0
+
+
+def family(card_id):
+    """The card's parallel family: 'mazi:bk:2023-panini-prizm:victor-wembanyama:136~choice-nebula' -> '...:136'."""
+    return (card_id or "").split("~", 1)[0]
+
+
+def corroborated(row, card_prices, family_prices):
+    """A headline sale loads only if some OTHER sale of the same card (any grade) or of its parallel family is within
+    CORROBORATE x of its price. Canary 2026-09-30: a $900,000 Garchomp LV.X PSA 10 (the card sells for hundreds) came
+    straight from a Fanatics weekly record with nothing else to back it."""
+    floor = row["price"] / CORROBORATE
+    return any(p >= floor for p in card_prices) or any(p >= floor for p in family_prices)
 
 
 def primary_source(s):
@@ -66,6 +79,8 @@ def build(canon, approved):
         src = primary_source(s)
         if not src:
             held["no venue record (press only)"] += 1; continue
+        if "/buy-now/" in (src.get("url") or ""):
+            held["Fanatics buy-now listing (an asking price, not a sale)"] += 1; continue
         sale_id = f"mazi-hl:{s['venue']}:{src['source_id']}"
         if ok is None:
             if sale_id not in approved:
@@ -92,8 +107,9 @@ def build(canon, approved):
     return rows, held
 
 
-def check_against_beta(cur, rows):
-    """-> (rows to insert, Counter of held reasons). Reads the beta only."""
+def check_against_beta(cur, rows, canon_family=None, approved=frozenset(), review=None):
+    """-> (rows to insert, Counter of held reasons). Reads the beta only. canon_family: {family: [(sale_id, price)]}
+    from the headline report (resolved sales), used with the beta's own sales to corroborate each price."""
     held = Counter()
     ids = [r["sale_id"] for r in rows]
     keys = [r["occurrence_key"] for r in rows]
@@ -104,11 +120,13 @@ def check_against_beta(cur, rows):
     seen_ids, seen_keys, seen_src = set(), set(), set()
     for sid, v, stx, ok in cur.fetchall():
         seen_ids.add(sid); seen_keys.add(ok); seen_src.add((v, stx))
-    cur.execute("""SELECT card_id, grade, price::float, sold_at::date FROM public.beta_sales
+    cur.execute("""SELECT card_id, grade, price::float, sold_at::date, provider FROM public.beta_sales
                    WHERE card_id = ANY(%s) AND published AND price_eligible""", (sorted({r["card_id"] for r in rows}),))
-    by_cg = defaultdict(list)
-    for cid, g, p, d in cur.fetchall():
+    by_cg, by_card = defaultdict(list), defaultdict(list)
+    for cid, g, p, d, prov in cur.fetchall():
         by_cg[(cid, g)].append((p, d))
+        if prov != PROVIDER:                       # our own headline rows never vouch for each other
+            by_card[cid].append(p)
     out = []
     for r in rows:
         if r["sale_id"] in seen_ids or r["occurrence_key"] in seen_keys or (r["venue"], r["source_transaction_id"]) in seen_src:
@@ -120,7 +138,21 @@ def check_against_beta(cur, rows):
         if len(sales) >= 3:
             med = statistics.median(p for p, _ in sales)
             if med > 0 and not (med / FENCE <= r["price"] <= med * FENCE):
-                held[f"price fence (>{FENCE:.0f}x off the card's median)"] += 1; r["_median"] = med; continue
+                held[f"price fence (>{FENCE:.0f}x off the card's median)"] += 1; r["_median"] = med
+                if review is not None:
+                    review.append({k: r[k] for k in ("sale_id", "card_id", "venue", "price", "sold_at", "grade", "_title", "source_url")}
+                                  | {"why": "%.0fx off the card's median $%s in this grade" % (FENCE, format(int(med), ",")),
+                                     "best_other": med})
+                continue
+        fam = [p for sid, p in (canon_family or {}).get(family(r["card_id"]), []) if sid != r["sale_id"]]
+        # a sale Andy approved by name is corroborated by that check
+        if r["sale_id"] not in approved and not corroborated(r, by_card.get(r["card_id"], []), fam):
+            if review is not None:
+                review.append({k: r[k] for k in ("sale_id", "card_id", "venue", "price", "sold_at", "grade", "_title", "source_url")}
+                              | {"why": "no other sale of this card or its parallels within %.0fx" % CORROBORATE,
+                                 "best_other": max(by_card.get(r["card_id"], []) + fam, default=None)})
+            held[f"uncorroborated: no other sale of this card or its parallels within {CORROBORATE:.0f}x (to Andy's review)"] += 1
+            r["_uncorroborated"] = True; continue
         out.append(r)
     return out, held
 
@@ -153,13 +185,21 @@ def main():
     approved = {l.strip() for l in open(a.approved)} if a.approved else set()
     canon = json.load(open(REPORT))
     rows, held = build(canon, approved)
-    ins, held2 = check_against_beta(cur, rows)
+    canon_family = defaultdict(list)                # every resolved headline sale, by parallel family, for corroboration
+    for s in canon:
+        if s["mazi"]["status"] in ("resolved", "resolved_needs_review") and s["mazi"]["candidates"]:
+            src = primary_source(s)
+            if src and "/buy-now/" not in (src.get("url") or ""):
+                canon_family[family(s["mazi"]["candidates"][0]["card_id"])].append(
+                    (f"mazi-hl:{s['venue']}:{src['source_id']}", float(s["price"])))
+    review = []
+    ins, held2 = check_against_beta(cur, rows, canon_family, approved, review)
     bc.rollback()
     held.update(held2)
     if a.limit:
         ins = sorted(ins, key=lambda r: -r["price"])[:a.limit]
     plan = OUT / f"plan_{stamp}.json"
-    json.dump({"report": str(REPORT), "insert": ins, "held": held}, open(plan, "w"), indent=1, default=str)
+    json.dump({"report": str(REPORT), "insert": ins, "held": held, "review": review}, open(plan, "w"), indent=1, default=str)
     print(f"headline sales considered {len(rows):,} | to insert {len(ins):,} (${sum(r['price'] for r in ins):,.0f})")
     for k, v in held.most_common():
         print(f"  held {v:,}: {k}")

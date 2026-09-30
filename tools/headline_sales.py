@@ -117,7 +117,10 @@ def collect_neon(min_price, since):
         for i, s, sid, t, p, d, bo, url in c.execute(
                 """SELECT id, source_code, source_item_id, title, sold_price, sold_date, best_offer, canonical_source_url
                    FROM public.external_transactions WHERE sold_price >= %s AND sold_date >= %s AND source_code = ANY(%s)
-                     AND NOT coalesce(best_offer, false)""", (min_price, since, NEON_SOURCES)):
+                     AND NOT coalesce(best_offer, false)
+                     -- Fanatics buy-now LISTINGS (asking prices, e.g. a "$1,000,000" Eevee PSA 10) were imported as sales
+                     -- in June; 5 reached the beta in the 2026-09-30 canary. A listing is not a sale.
+                     AND coalesce(canonical_source_url, '') NOT LIKE '%%/buy-now/%%'""", (min_price, since, NEON_SOURCES)):
             out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in ("goldin", "heritage", "rea") else "unknown",
                         "source_id": sid, "neon_id": i, "title": t, "price": float(p), "date": d.isoformat(), "prec": "day", "url": url})
         c.rollback()
