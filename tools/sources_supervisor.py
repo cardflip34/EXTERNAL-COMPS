@@ -357,7 +357,9 @@ def main():
                 run_leg(state, "local_bridge",
                         [sys.executable, "-u", "bridge_local_sources_to_neon.py",
                          "--source", "all", "--commit", "--yes"],
-                        1800, extra_env=bridge_env)
+                        # 2 h, not 30 min: a backfill delta (Goldin 2012-2025, ~290K rows) needs ~50 min; the bridge
+                        # now commits every 10K rows, so a kill keeps what landed
+                        7200, extra_env=bridge_env)
 
         write_heartbeat(state)
         if one_cycle:

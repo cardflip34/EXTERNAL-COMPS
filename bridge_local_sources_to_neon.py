@@ -271,6 +271,13 @@ def bridge_source(cur, code, commit):
         # (from the other two unique indexes) must not be counted as landed.
         rc = cur.rowcount
         inserted += rc if rc is not None and rc >= 0 else len(chunk)
+        # commit every 20 batches (10,000 rows): one transaction per source rolled a whole large delta back when the
+        # supervisor's leg timeout killed it -- the 2026-09-29 Goldin backfill is ~290K rows (~50 min) against a 30-min
+        # leg -- and sources after goldin never ran. Inserts are idempotent (preloaded ids + ON CONFLICT DO NOTHING).
+        if (i // BATCH) % 20 == 19:
+            cur.connection.commit()
+            print("  [%s] %d/%d offered, %d inserted so far [committed]" % (code, i + len(chunk), len(fresh), inserted),
+                  flush=True)
     return inserted
 
 
