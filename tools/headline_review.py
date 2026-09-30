@@ -12,7 +12,7 @@ Each proposed card links to its MAZIDEX page so the match can be compared by eye
 
   python3 tools/headline_review.py
 """
-import html, json, os, sys
+import argparse, html, json, os, sys
 from collections import Counter
 from urllib.parse import quote
 
@@ -58,7 +58,27 @@ def table(rows):
     return head + "".join(row(s, i + 1) for i, s in enumerate(rows)) + "</tbody></table>"
 
 
+def held_section(plan_path):
+    """D. rows the loader held for Andy: price not backed by any other sale of the card or its parallels, or far off
+    the card's median."""
+    p = json.load(open(plan_path))
+    rows = sorted(p.get("review") or [], key=lambda r: -r["price"])
+    body = "".join(
+        f'<tr><td class="n">{i + 1}</td><td class="p">${r["price"]:,.0f}</td><td>{esc(r["sold_at"][:10])}</td><td>{esc(r["venue"])}</td>'
+        f'<td>{esc(r["_title"])}<div class="dim">{esc(r["grade"])} · <a href="{esc(r.get("source_url") or "")}">source</a></div></td>'
+        f'<td>{esc(r["why"])}<div class="dim">best other: {("$" + format(int(r["best_other"]), ",")) if r.get("best_other") else "none"}</div></td>'
+        f'<td>{card_link(r["card_id"])}</td><td class="ok"></td></tr>' for i, r in enumerate(rows))
+    return (f'<h2>D. Held by the loader for your check ({len(rows)}): price not backed by other sales</h2>'
+            '<p class="dim">Each of these would load only with your OK. A real record sale can look like this; so can a bad '
+            'record (e.g. the $900,000 Garchomp LV.X in the canary).</p><div class="wrap"><table><thead><tr><th>#</th><th>price</th>'
+            '<th>date</th><th>venue</th><th>sale</th><th>why held</th><th>card</th><th>OK?</th></tr></thead><tbody>'
+            + body + "</tbody></table></div>")
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--plan", help="a loader plan JSON (tools/export_headline_beta.py) -> adds section D")
+    args = ap.parse_args()
     canon = json.load(open(os.path.join(OUT, "headline_sales_report.json")))
     a = [s for s in canon if s["price"] >= 1_000_000]
     b = [s for s in canon if 100_000 <= s["price"] < 1_000_000 and s["venue"] in BETA_VENUES and s["mazi"]["status"] == "resolved"]
@@ -82,6 +102,7 @@ Fanatics sales are as of the 2026-09-28 22:01 API pull (today's pull was rate-li
 <h2>B. First export batch: $100K–$1M, matched to one catalog card ({len(b)})</h2>
 <p class="dim">Venues the site already accepts. A wrong parallel (e.g. the base autograph instead of the /25 refractor) is the main risk: spot-check the "proposed catalog card" column.</p>
 <div class="wrap">{table(b)}</div>
+{held_section(args.plan) if args.plan else ""}
 <h2>C. Not ready yet (under $1M)</h2><div class="wrap"><table><thead><tr><th>venue</th><th>MAZI ID</th><th>sales</th></tr></thead><tbody>
 {"".join(f"<tr><td>{esc(v)}</td><td>{esc(k)}</td><td>{n:,}</td></tr>" for (v, k), n in sorted(rest.items(), key=lambda x: -x[1]))}
 </tbody></table></div></body></html>"""
