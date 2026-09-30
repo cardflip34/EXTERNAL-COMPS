@@ -36,7 +36,9 @@ def to_row(r):
         return None
     if not r.get("item_id") or price <= 0:
         return None
-    raw = {k: r.get(k) for k in ("shipping", "condition", "bids", "query", "page", "scraped_at", "source")}
+    # image_url at the top level too (2026-09-29): it was only nested in raw.trusted_enrichment, so the photo pass
+    # that reads raw->>'image_url' found 10 of 43 new cards without a picture
+    raw = {k: r.get(k) for k in ("shipping", "condition", "bids", "query", "page", "scraped_at", "source", "image_url")}
     raw.update({"ebay_category": "183050", "pilot": "veefriends_signed_in_2026-09-27"})
     return ExternalRow(title=r["title"], sold_price=price, sold_date=datetime.strptime(r["sold_date"], "%Y-%m-%d").date(),
                        source_item_id=str(r["item_id"]), source_url=r.get("url") or "", image_url=r.get("image_url") or "",

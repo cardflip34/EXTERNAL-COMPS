@@ -38,7 +38,8 @@ def to_row(r):
         return None
     if not r.get("item_id") or price <= 0 or not r.get("sold_date") or not r.get("title"):
         return None
-    raw = {k: r.get(k) for k in ("shipping", "condition", "bids", "segment", "shard", "page", "scraped_at", "source")}
+    raw = {k: r.get(k) for k in ("shipping", "condition", "bids", "segment", "shard", "page", "scraped_at", "source",
+                                "image_url")}    # top-level too, not only in raw.trusted_enrichment (2026-09-29)
     raw["ebay_category"] = r.get("ebay_category")
     return ExternalRow(title=r["title"], sold_price=price, sold_date=datetime.strptime(r["sold_date"], "%Y-%m-%d").date(),
                        source_item_id=str(r["item_id"]), source_url=r.get("url") or "", image_url=r.get("image_url") or "",
