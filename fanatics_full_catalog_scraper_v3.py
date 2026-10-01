@@ -328,7 +328,10 @@ def normalize_record(record: dict[str, Any], shard: dict[str, Any]) -> dict[str,
 
 def dedupe_keys(row: dict[str, Any]) -> list[str]:
     keys: list[str] = []
-    for key in ("source_item_id", "api_id", "listing_uuid", "ref_id", "url", "api_url"):
+    # NOT ref_id: Fanatics reuses refId across auctions (a lot number), so a new sale whose refId had been seen before
+    # was dropped as a "dupe" -- incl. the $8.04M Cooper Flagg (refId 22901, last used by another item in July) and the
+    # $810K Ohtani Orange /25 (2026-09-30; ~1% of a 300-sale sample, concentrated on Premier lots). api_id is the key.
+    for key in ("source_item_id", "api_id", "listing_uuid", "url", "api_url"):
         value = normalize_key(row.get(key))
         if value:
             keys.append(f"{key}:{value}")

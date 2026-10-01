@@ -132,13 +132,15 @@ def main():
     # newest ~250 sales per category, so a Premier auction closing thousands of lots at once outran it (Flagg $8.04M missed).
     ap.add_argument("--no-category", action="store_true", help="one base covering every category")
     ap.add_argument("--min-price", type=int, default=0)
+    ap.add_argument("--rescan", action="store_true",
+                    help="ignore bands marked done (e.g. after the 2026-09-30 refId dedupe fix); dupes by id stay dupes")
     a = ap.parse_args()
     log = lambda m: print(m, flush=True)
     bases = [{"category": c} for c in a.categories] + ([{}] if a.no_category else [])
     if a.from_unresolved:
         bases += bases_from_unresolved(a.only_category)
     bases = bases[:a.max_bases] if a.max_bases else bases
-    done = {l.strip() for l in open(PROGRESS)} if PROGRESS.exists() else set()
+    done = set() if a.rescan else ({l.strip() for l in open(PROGRESS)} if PROGRESS.exists() else set())
     conn = None if a.dry_run else F.init_db()
     try:
         state = json.load(open(F.STATE_FILE))
