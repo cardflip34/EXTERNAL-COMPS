@@ -174,6 +174,14 @@ class CardMatches(unittest.TestCase):
     def test_image_variation_is_its_own_card(self):
         self.check("2018 Topps Chrome Variation Orange Refractor Shohei Ohtani ROOKIE /25 #150 BGS 10", "2018 Topps Chrome", "Orange Refractor", False)
 
+    def test_sets_and_lots_are_not_single_cards(self):
+        self.check("1986 Fleer Basketball Complete Set w/ Michael Jordan ROOKIE #57 PSA 8", "1986 Fleer", "", False)
+        self.check("Lot (20) 2013 Complete Set Panini Innovation Kaboom #1-#20 PSA", "2013 Panini Innovation", "Kaboom", False)
+        self.check("1986 Fleer Basketball Unopened Wax Box #57", "1986 Fleer", "", False)
+        self.check("2003 Exquisite Collection Limited Logos LeBron James ROOKIE PATCH AUTO /75 #LL-LJ", "2003 Exquisite Collection Limited Logos",
+                   "Patch Auto", True)
+        self.check("1952 Topps #311 Mickey Mantle (PSA 8)", "1952 Topps", "", True)
+
     def test_after_market_signatures(self):
         self.check("1986 Fleer Basketball Michael Jordan ROOKIE AUTO #57 BAS BGS 7 NRMT", "1986 Fleer", "", False)
         self.check("1986-87 Fleer #57 Michael Jordan Signed Rookie Card - PSA EX 5, PSA/DNA NM-MT 8", "1986 Fleer", "", False)

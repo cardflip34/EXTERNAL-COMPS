@@ -94,6 +94,8 @@ def collect_fanatics(min_price, since, sleep=3.0):
                 sd = (r.get("soldDate") or "")[:10]
                 if sd and sd < since:
                     reached_since = True; continue
+                if r.get("paymentStatus") not in (None, "Paid") or r.get("isComplete") is False:
+                    continue                       # voided / unpaid auctions are not sales
                 rows.append({"src": "fanatics_api", "venue": "fanatics", "sale_type": (r.get("auctionType") or "").lower() or "unknown",
                              "source_id": r.get("id"), "title": r.get("title"), "price": float(r.get("purchasePrice") or 0),
                              "date": sd, "prec": "day", "url": f"https://sales-history.fanaticscollect.com/?id={r.get('id')}",
@@ -211,6 +213,11 @@ PRODUCT_TOKENS = {"chrome", "finest", "bowman", "mini", "tiffany", "update", "tr
                   "ultra", "metal", "exquisite", "flawless", "immaculate", "spectra", "obsidian", "origins",
                   "chronicles", "hoops", "kaboom", "downtown", "sticker", "dynasty", "tribute", "inception", "sterling",
                   "variation"}                                     # image variations are separate cards
+# a set, lot or sealed product is never a single card ("1986 Fleer Basketball Complete Set w/ Michael Jordan ROOKIE #57"
+# matched the Jordan card, 2026-09-30). "Exquisite Collection" is a product, so "collection" counts only as "... of".
+NOT_SINGLE_RE = re.compile(r"\b(complete set|near(?:ly)? complete|team set|partial set|master set|set w/|set with|sets? of|"
+                           r"lot of|lot \(|collection of|card collection|\d+ different|unopened|sealed|wax box|hobby box|"
+                           r"blaster box|wax pack|box of|case of|hobby case)\b|\(\d+\)(?!\s*#)", re.I)
 NOT_PARALLEL_RE = re.compile(r"red sox|white sox|blue jays|golden state|(?:pristine )?black label|gold label|silver label", re.I)
 SYNONYM = {"autographs": "auto", "autograph": "auto", "autos": "auto", "autographed": "auto", "rookies": "rookie", "rc": "rookie",
            "refractors": "refractor", "prizms": "prizm", "superfractors": "superfractor", "patches": "patch"}
@@ -224,6 +231,8 @@ def tokens(text):
 def card_matches(title, print_run, set_name, parallel, cand_print_run, year=None, cand_year=None):
     """(ok, reason): may this catalog card be the card in this sale title? Player and card number are checked by the
     caller; this checks year, set, parallel and print run."""
+    if NOT_SINGLE_RE.search(title or ""):
+        return False, "not a single card (set, lot or sealed product)"
     if year and cand_year and int(year) != int(cand_year):
         return False, "year %s vs catalog %s" % (year, cand_year)     # 2024 vs 2025 Topps Chrome #1 are different cards
     tw = tokens(NOT_PARALLEL_RE.sub(" ", title))
