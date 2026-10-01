@@ -69,6 +69,15 @@ SOURCES = {
         "file": "hugginsandscott_comps.json", "source_name": "Huggins & Scott Auctions",
         "source_type": "auction_house", "supports_sold": True,
         "supports_active": False, "obo_policy": "n/a", "vpe": True},
+    # 2026-10-01: createauction.com "Lots/Gallery" houses (lotsgallery_scraper.py, a real Chrome via CDP)
+    "memorylane": {
+        "file": "memorylane_comps.json", "source_name": "Memory Lane Inc.",
+        "source_type": "auction_house", "supports_sold": True,
+        "supports_active": False, "obo_policy": "n/a", "vpe": True},
+    "lelands": {
+        "file": "lelands_comps.json", "source_name": "Lelands",
+        "source_type": "auction_house", "supports_sold": True,
+        "supports_active": False, "obo_policy": "n/a", "vpe": True},
 }
 
 
@@ -171,9 +180,26 @@ def map_rea(c):
                           "lot": c.get("lot"), "sold_date_granularity": "season"}}
 
 
+def map_lotsgallery(c):
+    """Memory Lane / Lelands: 'SOLD FOR $X' -- both houses state 'Prices Shown Include Buyer's Premium'; dated by the
+    auction's end (lot-level close times are not on the gallery)."""
+    try:
+        price = float(c.get("sold_price"))
+    except (TypeError, ValueError):
+        return None
+    if price <= 0 or not c.get("sold_date") or not c.get("url"):
+        return None
+    return {"source_item_id": c["url"], "title": c.get("title", ""), "sold_price": price,
+            "sold_date": c["sold_date"], "source_url": c["url"],
+            "grade": None, "set_name": None, "card_number": None, "scraped_at": c.get("scraped_at"),
+            "raw_extra": {"auction_id": c.get("auction_id"), "auction_title": c.get("auction_title"), "lot": c.get("lot"),
+                          "bids": c.get("bids"), "sold_date_granularity": "auction_end",
+                          "_mazi_price_basis": {"basis": "price realized incl. buyer's premium (stated by the house)"}}}
+
+
 MAPPERS = {"goldin": map_goldin, "tcgplayer": map_tcgplayer,
            "myslabs": map_myslabs, "auctionreport": map_auctionreport, "rea": map_rea,
-           "hugginsandscott": map_rea}
+           "hugginsandscott": map_rea, "memorylane": map_lotsgallery, "lelands": map_lotsgallery}
 
 # verified_price_eligible is a GENERATED column (DB computes it: non-ebay sold
 # rows resolve True) — do NOT insert it.

@@ -51,7 +51,7 @@ _LOT_PRICE_RE = re.compile(r"Lot\s+(\d+)\s*-\s*\$([\d,]{3,})")
 SEASONS = ("winter", "spring", "summer", "fall", "marketplace", "encore")
 # Not a single card: collections, sets, runs, sealed product, artwork, photos, documents, game-used memorabilia.
 _MULTI_RE = re.compile(
-    r"\b(collections?|lots? of|group of|complete set|near(?:ly)? complete|partial set|sets? of|sets|run of|hoard|archive|"
+    r"\b((?<!exquisite )collections?|lots? of|group of|complete set|near(?:ly)? complete|partial set|sets? of|sets|run of|hoard|archive|"
     r"album|scrapbook|uncut|sheets?|packs?|box(?:es)?|cases?|wax|display|original art(?:work)?|artwork|painting|"
     r"photographs?|letters?|documents?|contracts?|checks?|jerseys?|uniforms?|helmets?|trophy|"
     r"trophies|rings?|(?<!rookie )tickets?|programs?|pennants?|posters?|trio|pair|duo|"
@@ -149,10 +149,20 @@ def parse_rea_listing(html, host="https://collectrea.com", prefix="archives"):
     return out
 
 
+# Memorabilia that names a year and a grader still is not a card: "Single-Signed Baseball (PSA)", "Game Used Bat",
+# "Photo-Matched ... Game Worn Jersey" (2026-10-01: 746 REA + 2,374 Huggins & Scott kept lots, and Lelands' first page).
+# Not "cap"/"hat": card variation names use them ("Exhibits Gil Hodges Signed B On Cap Variation").
+_MEMO_RE = re.compile(
+    r"\b(?:signed|autographed|inscribed|game[- ]used|game[- ]worn|photo[- ]?matched)\b[^#]{0,70}?\b(?:baseballs?|footballs?|"
+    r"basketballs?|hockey pucks?|pucks?|balls?|bats?|jerseys?|photos?|photographs?|helmets?|gloves?|cleats|shoes|sneakers|"
+    r"bobbleheads?|pennants?|programs?|tickets?|lithographs?|prints?)\b(?!\s+cards?\b)|\b(?:game[- ]used|game[- ]worn|"
+    r"photo[- ]?matched)\b(?![^#]{0,40}\b(?:card|patch|relic|swatch)\b)", re.I)
+
+
 def is_single_card(title):
     """True for a single card lot; False for sets, collections, sealed product, artwork and memorabilia."""
     t = title or ""
-    return bool(_CARDISH_RE.search(t)) and not _MULTI_RE.search(t)
+    return bool(_CARDISH_RE.search(t)) and not _MULTI_RE.search(t) and not _MEMO_RE.search(t)
 
 
 def lots_of_auction(lots, year, season):

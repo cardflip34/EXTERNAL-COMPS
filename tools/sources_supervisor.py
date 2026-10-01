@@ -57,6 +57,7 @@ TCG_EVERY_H = float(os.environ.get("SRC_SUP_TCG_EVERY_H", "12"))
 MYSLABS_EVERY_H = float(os.environ.get("SRC_SUP_MYSLABS_EVERY_H", "6"))
 LOCAL_BRIDGE_EVERY_H = float(os.environ.get("SRC_SUP_LOCAL_BRIDGE_EVERY_H", "12"))
 REA_EVERY_H = float(os.environ.get("SRC_SUP_REA_EVERY_H", "24"))
+LOTSGALLERY_EVERY_H = float(os.environ.get("SRC_SUP_LOTSGALLERY_EVERY_H", "168"))
 
 _stop = False
 
@@ -83,6 +84,15 @@ def load_env_file(path):
     except Exception:
         pass
     return env
+
+
+def cdp_up(url):
+    import urllib.request
+    try:
+        urllib.request.urlopen(url, timeout=5).read()
+        return True
+    except Exception:
+        return False
 
 
 def pgrep(pattern):
@@ -345,6 +355,21 @@ def main():
                 run_leg(state, "hugginsandscott",
                         [sys.executable, "-u", "rea_scraper.py", "--house", "hugginsandscott", "--by-auction",
                          "--since-year", str(date.today().year - 1)], 2400)
+
+        # 8c) Memory Lane / Lelands (weekly) -- new auctions only (done ones are in <house>_state.json). Cloudflare blocks
+        # headless, so this needs the dedicated real Chrome on 127.0.0.1:9335 (see lotsgallery_scraper.py); without it the
+        # leg is skipped with a warning, never started headless.
+        for house in ("memorylane", "lelands"):
+            if hours_since((state.get("last_" + house) or {}).get("at")) < LOTSGALLERY_EVERY_H:
+                continue
+            if dry:
+                print("[dry] would run lotsgallery_scraper.py --house %s" % house, flush=True)
+            elif pgrep("lotsgallery_scraper.py"):
+                print("[%s] lotsgallery_scraper already running — skip %s" % (now_iso(), house), flush=True)
+            elif not cdp_up("http://127.0.0.1:9335/json/version"):
+                print("[%s] WARNING: auction Chrome (127.0.0.1:9335) is not open — %s skipped" % (now_iso(), house), flush=True)
+            else:
+                run_leg(state, house, [sys.executable, "-u", "lotsgallery_scraper.py", "--house", house], 4 * 3600)
 
         # 9) bridge local sources -> Neon (12h) — land tcgplayer/myslabs/AR/rea +
         # goldin incrementals continuously (idempotent ON CONFLICT DO NOTHING). Bridge env.
