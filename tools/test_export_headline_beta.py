@@ -42,7 +42,7 @@ class Build(unittest.TestCase):
     def test_black_label_is_held(self):
         s = sale(); s["title"] = "2003-04 Topps Chrome #111 LeBron James BGS 10 Pristine Black Label"; s["grade"] = "BGS 10"
         rows, held = E.build([s], set())
-        self.assertEqual((rows, held["BGS Black Label (its own grade bucket is not decided yet)"]), ([], 1))
+        self.assertEqual((rows, held["Black/Gold Label slab (its own grade bucket is not decided yet)"]), ([], 1))
 
     def test_buy_now_listing_is_held(self):
         s = sale(); s["sources"][0].update(src="neon", venue="goldin", url="https://www.fanaticscollect.com/buy-now/abc")
@@ -50,14 +50,29 @@ class Build(unittest.TestCase):
         self.assertEqual((rows, held["Fanatics buy-now listing (an asking price, not a sale)"]), ([], 1))
 
     def test_corroboration(self):
-        row = {"price": 900_000.0}
-        self.assertFalse(E.corroborated(row, [310.0, 280.0], []))                 # Garchomp LV.X: hundreds of dollars
-        self.assertTrue(E.corroborated(row, [], [120_000.0]))                     # a parallel of the same card at 1/7.5
-        self.assertTrue(E.corroborated({"price": 2_333_250.0}, [250_000.0], []))  # 1952 Mantle PSA 8 vs PSA 7 sales
-        self.assertFalse(E.corroborated(row, [], []))                             # nothing at all
+        row = {"price": 900_000.0, "venue": "fanatics", "source_transaction_id": "WEEKLY6518934"}
+        self.assertFalse(E.corroborated(row, [], [310.0, 280.0], [])[0])                          # Garchomp: hundreds
+        self.assertFalse(E.corroborated(row, [], [], [("fanatics", "WEEKLY6518930", 312_000.0)])[0])  # weekly vouching weekly
+        self.assertTrue(E.corroborated(row, [], [], [("goldin", "L1", 120_000.0)])[0])             # another venue
+        prem = {"price": 132_000.0, "venue": "fanatics", "source_transaction_id": "PREMIER1"}
+        self.assertFalse(E.corroborated(prem, [7_345.0], [23_500.0], [])[0])                        # same grade decides
+        self.assertTrue(E.corroborated(prem, [], [23_500.0], [])[0])                                # else any grade
+        self.assertTrue(E.corroborated({"price": 2_333_250.0, "venue": "heritage", "source_transaction_id": "HA-6"},
+                                       [], [250_000.0], [])[0])
+        self.assertFalse(E.corroborated(row, [], [], [])[0])
         self.assertEqual(E.family("mazi:bk:2023-panini-prizm:victor-wembanyama:136~choice-nebula"),
                          "mazi:bk:2023-panini-prizm:victor-wembanyama:136")
         self.assertEqual(E.family("ptcgio:dp5-97"), "ptcgio:dp5-97")
+
+    def test_gold_label_and_unpaid_are_held(self):
+        s = sale(); s["title"] = "1986 Fleer Basketball Michael Jordan ROOKIE #57 SGC 10 PRISTINE, GOLD LABEL"
+        rows, held = E.build([s], set())
+        self.assertEqual((rows, held["Black/Gold Label slab (its own grade bucket is not decided yet)"]), ([], 1))
+        s = sale(); s["title"] = "2018 Topps Gold Label Framed Autograph Ohtani PSA 10"
+        self.assertEqual(len(E.build([s], set())[0]), 1)            # Topps Gold Label is a product, not a slab label
+        s = sale(); s["payment"] = "Unpaid"
+        rows, held = E.build([s], set())
+        self.assertEqual((rows, held["Fanatics: unpaid when captured (re-check later)"]), ([], 1))
 
     def test_not_eligible_at_all(self):
         rows, held = E.build([sale(price=99_000), sale(status="needs_review"), sale(status="mint_candidate"),

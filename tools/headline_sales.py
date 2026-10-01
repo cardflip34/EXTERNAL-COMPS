@@ -94,13 +94,18 @@ def collect_fanatics(min_price, since, sleep=3.0):
                 sd = (r.get("soldDate") or "")[:10]
                 if sd and sd < since:
                     reached_since = True; continue
-                if r.get("paymentStatus") not in (None, "Paid") or r.get("isComplete") is False:
-                    continue                       # voided / unpaid auctions are not sales
+                if r.get("isComplete") is False:
+                    continue                       # voided
+                pay = r.get("paymentStatus")
+                upd = (r.get("updatedAt") or "")[:10]
+                # Unpaid alone is a capture-time snapshot (MAZIDEX 2026-10-01); unpaid 7+ days with no update = non-payment
+                if pay == "Unpaid" and sd and upd == sd and (date.today() - date.fromisoformat(sd)).days >= 7:
+                    continue
                 rows.append({"src": "fanatics_api", "venue": "fanatics", "sale_type": (r.get("auctionType") or "").lower() or "unknown",
                              "source_id": r.get("id"), "title": r.get("title"), "price": float(r.get("purchasePrice") or 0),
                              "date": sd, "prec": "day", "url": f"https://sales-history.fanaticscollect.com/?id={r.get('id')}",
                              "grade_src": " ".join(str(x) for x in (r.get("gradingService"), r.get("grade")) if x not in (None, "")) or None,
-                             "category": r.get("category"), "image": r.get("mediumImage1")})
+                             "category": r.get("category"), "image": r.get("mediumImage1"), "payment": pay})
             got += len(recs); page += 1
             if reached_since:
                 break
@@ -117,12 +122,15 @@ def collect_neon(min_price, since):
         c.execute("SET statement_timeout='300s'")
         out = []
         for i, s, sid, t, p, d, bo, url in c.execute(
-                """SELECT id, source_code, source_item_id, title, sold_price, sold_date, best_offer, canonical_source_url
+                """SELECT id, source_code, source_item_id, title, sold_price, sold_date, best_offer,
+                          -- Goldin rows keep the lot URL in raw.url only (75 of 92 loaded Goldin rows had no source link)
+                          coalesce(canonical_source_url, source_url, raw->>'url')
                    FROM public.external_transactions WHERE sold_price >= %s AND sold_date >= %s AND source_code = ANY(%s)
                      AND NOT coalesce(best_offer, false)
                      -- Fanatics buy-now LISTINGS (asking prices, e.g. a "$1,000,000" Eevee PSA 10) were imported as sales
                      -- in June; 5 reached the beta in the 2026-09-30 canary. A listing is not a sale.
-                     AND coalesce(canonical_source_url, '') NOT LIKE '%%/buy-now/%%'""", (min_price, since, NEON_SOURCES)):
+                     AND coalesce(canonical_source_url, source_url, raw->>'url', '') NOT LIKE '%%/buy-now/%%'""",
+                (min_price, since, NEON_SOURCES)):
             out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in ("goldin", "heritage", "rea") else "unknown",
                         "source_id": sid, "neon_id": i, "title": t, "price": float(p), "date": d.isoformat(), "prec": "day", "url": url})
         c.rollback()
@@ -171,6 +179,7 @@ def canonicalize(rows, players):
         best = min(g["rows"], key=lambda r: ({"fanatics_api": 0, "neon": 1, "seed": 2}[r["src"]], r["prec"] != "day"))
         venue = next((r["venue"] for r in g["rows"] if r["venue"] not in ("unknown", "private")), best["venue"])
         out.append({"title": best["title"], "price": best["price"], "date": best["date"], "prec": best["prec"], "venue": venue,
+                    "payment": best.get("payment"),
                     "sale_type": best["sale_type"], "sources": [{k: r.get(k) for k in ("src", "venue", "source_id", "neon_id", "url", "price", "date")}
                                                                  for r in g["rows"]],
                     **parse_title(best["title"]), "player_keys": sorted(players.get(id(best), set()))})
@@ -205,20 +214,23 @@ PARALLEL_TOKENS = {"superfractor", "refractor", "xfractor", "gold", "red", "oran
                    "silver", "platinum", "nebula", "shimmer", "wave", "mojo", "atomic", "sapphire", "padparadscha", "emerald",
                    "ruby", "cracked", "ice", "hyper", "power", "disco", "camo", "tiger", "zebra", "snakeskin", "laser", "lazer",
                    "velocity", "rainbow", "sepia", "negative", "aqua", "teal", "bronze", "copper", "yellow", "lime", "magenta",
-                   "fuchsia"}                       # not "white": T206 "White Border" is the set
+                   "fuchsia", "sparkle", "geometric", "precious", "gems"}
+# (2026-10-01 MAZIDEX audit: Gold SPARKLE /24 was filed on Gold /10, a White GEOMETRIC on Refractor Gold, a Championship
+#  Precious Metal Gems /50 on the base card)                       # not "white": T206 "White Border" is the set
 # product lines: a title naming one the card's set/parallel doesn't (1975 Topps MINI vs 1975 Topps; Topps CHROME vs Topps;
 # Topps Chrome UPDATE vs Topps Chrome) is a different card with the same number
 PRODUCT_TOKENS = {"chrome", "finest", "bowman", "mini", "tiffany", "update", "traded", "optic", "select", "mosaic", "prizm",
                   "stadium", "archives", "gallery", "draft", "national", "treasures", "contenders", "absolute", "donruss",
                   "ultra", "metal", "exquisite", "flawless", "immaculate", "spectra", "obsidian", "origins",
                   "chronicles", "hoops", "kaboom", "downtown", "sticker", "dynasty", "tribute", "inception", "sterling",
-                  "variation"}                                     # image variations are separate cards
+                  "variation", "championship"}                                     # image variations are separate cards
 # a set, lot or sealed product is never a single card ("1986 Fleer Basketball Complete Set w/ Michael Jordan ROOKIE #57"
 # matched the Jordan card, 2026-09-30). "Exquisite Collection" is a product, so "collection" counts only as "... of".
 NOT_SINGLE_RE = re.compile(r"\b(complete set|near(?:ly)? complete|team set|partial set|master set|set w/|set with|sets? of|"
                            r"lot of|lot \(|collection of|card collection|\d+ different|unopened|sealed|wax box|hobby box|"
                            r"blaster box|wax pack|box of|case of|hobby case)\b|\(\d+\)(?!\s*#)", re.I)
-NOT_PARALLEL_RE = re.compile(r"red sox|white sox|blue jays|golden state|(?:pristine )?black label|gold label|silver label", re.I)
+NOT_PARALLEL_RE = re.compile(r"red sox|white sox|blue jays|golden state|(?:pristine )?black label|gold label|silver label|"
+                             r"mba (?:gold|silver|bronze)(?: diamond)?(?: certified)?|gold diamond certified", re.I)
 SYNONYM = {"autographs": "auto", "autograph": "auto", "autos": "auto", "autographed": "auto", "rookies": "rookie", "rc": "rookie",
            "refractors": "refractor", "prizms": "prizm", "superfractors": "superfractor", "patches": "patch"}
 
