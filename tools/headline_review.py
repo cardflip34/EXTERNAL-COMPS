@@ -75,9 +75,27 @@ def held_section(plan_path):
             + body + "</tbody></table></div>")
 
 
+def mint_section(path):
+    """E. proposed new MAZI IDs (tools/headline_mint.py) for sales whose card is not in the catalog."""
+    props = sorted(json.load(open(path)), key=lambda p: -p["sale"]["price"])
+    body = "".join(
+        f'<tr><td class="n">{i + 1}</td><td class="p">${p["sale"]["price"]:,.0f}</td><td>{esc(p["sale"]["venue"])}</td>'
+        f'<td>{esc(p["sale"]["title"])}</td><td><code>{esc(p["proposed_card_id"])}</code>'
+        f'<div class="dim">{esc(p.get("set_name"))} · #{esc(p["number"])}{(" · " + esc(p["parallel"])) if p.get("parallel") else ""}</div></td>'
+        f'<td>{esc(p.get("catalog_set") or "NEW SET")}</td><td class="st st-{"resolved" if p["confidence"] == "high" else "needs_review"}">'
+        f'{esc(p["confidence"])}</td><td class="dim">{esc("; ".join(p["notes"]))}</td><td class="ok"></td></tr>'
+        for i, p in enumerate(props))
+    return (f'<h2>E. Proposed new MAZI IDs ({len(props)}): cards the catalog does not have</h2>'
+            '<p class="dim">Built from the sale title by the spine rule mazi:&lt;sport&gt;:&lt;year&gt;-&lt;set&gt;:&lt;player&gt;:&lt;number&gt;[~parallel], '
+            'placed in the catalog\'s own set when one fits. Nothing is minted until you OK an ID; MAZIDEX then loads the catalog row.</p>'
+            '<div class="wrap"><table><thead><tr><th>#</th><th>price</th><th>venue</th><th>sale</th><th>proposed ID</th><th>catalog set</th>'
+            '<th>confidence</th><th>notes</th><th>OK?</th></tr></thead><tbody>' + body + "</tbody></table></div>")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", help="a loader plan JSON (tools/export_headline_beta.py) -> adds section D")
+    ap.add_argument("--mint", help="mint proposals JSON (tools/headline_mint.py) -> adds section E")
     args = ap.parse_args()
     canon = json.load(open(os.path.join(OUT, "headline_sales_report.json")))
     a = [s for s in canon if s["price"] >= 1_000_000]
@@ -103,6 +121,7 @@ Fanatics sales are as of the 2026-09-28 22:01 API pull (today's pull was rate-li
 <p class="dim">Venues the site already accepts. A wrong parallel (e.g. the base autograph instead of the /25 refractor) is the main risk: spot-check the "proposed catalog card" column.</p>
 <div class="wrap">{table(b)}</div>
 {held_section(args.plan) if args.plan else ""}
+{mint_section(args.mint) if args.mint else ""}
 <h2>C. Not ready yet (under $1M)</h2><div class="wrap"><table><thead><tr><th>venue</th><th>MAZI ID</th><th>sales</th></tr></thead><tbody>
 {"".join(f"<tr><td>{esc(v)}</td><td>{esc(k)}</td><td>{n:,}</td></tr>" for (v, k), n in sorted(rest.items(), key=lambda x: -x[1]))}
 </tbody></table></div></body></html>"""
