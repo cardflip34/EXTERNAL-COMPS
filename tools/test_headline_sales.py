@@ -182,6 +182,16 @@ class CardMatches(unittest.TestCase):
                    "Patch Auto", True)
         self.check("1952 Topps #311 Mickey Mantle (PSA 8)", "1952 Topps", "", True)
 
+    def test_audit_misfiles(self):
+        self.check("2023 Panini Prizm Gold Sparkle Victor Wembanyama ROOKIE /24 #136 PSA 10", "2023 Panini Prizm", "Gold", False)
+        self.check("2023 Panini Prizm Gold Sparkle Victor Wembanyama ROOKIE /24 #136 PSA 10", "2023 Panini Prizm", "Gold Sparkle", True)
+        self.check("1997-98 SkyBox Metal Universe Championship Precious Metal Gems (PMG) #23 Michael Jordan (#018/50) - BGS NM 7",
+                   "1997 Metal Universe", "", False)
+        self.check("2025-26 Topps Chrome Rookie Autographs White Geometric Refractor #TCAR-CF Cooper Flagg (#2/2) - PSA 8, MBA Gold Diamond Certified",
+                   "2025 Topps Chrome Rookie Autograph", "Refractor Gold", False)
+        self.check("2018 Bowman Chrome Rookie Autographs Orange Refractor #BCRA-SO Ohtani BGS 9.5 MBA Gold Diamond Certified",
+                   "2018 Bowman Chrome Rookie Autographs", "Orange Refractor", True)
+
     def test_after_market_signatures(self):
         self.check("1986 Fleer Basketball Michael Jordan ROOKIE AUTO #57 BAS BGS 7 NRMT", "1986 Fleer", "", False)
         self.check("1986-87 Fleer #57 Michael Jordan Signed Rookie Card - PSA EX 5, PSA/DNA NM-MT 8", "1986 Fleer", "", False)

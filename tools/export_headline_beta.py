@@ -104,8 +104,11 @@ def build(canon, approved):
             ok = s["mazi"]["candidates"][0]
         if s.get("prec") != "day":
             held["month-precision date"] += 1; continue
-        if "black label" in s["title"].lower():
-            held["BGS Black Label (its own grade bucket is not decided yet)"] += 1; continue
+        tl = s["title"].lower()
+        if "black label" in tl or ("gold label" in tl and "topps gold label" not in tl):
+            held["Black/Gold Label slab (its own grade bucket is not decided yet)"] += 1; continue
+        if s.get("payment") == "Unpaid":
+            held["Fanatics: unpaid when captured (re-check later)"] += 1; continue
         grade = X.beta_grade(s.get("grade") or "")
         if not grade:
             held["no grade read from the title"] += 1; continue

@@ -42,7 +42,7 @@ class Build(unittest.TestCase):
     def test_black_label_is_held(self):
         s = sale(); s["title"] = "2003-04 Topps Chrome #111 LeBron James BGS 10 Pristine Black Label"; s["grade"] = "BGS 10"
         rows, held = E.build([s], set())
-        self.assertEqual((rows, held["BGS Black Label (its own grade bucket is not decided yet)"]), ([], 1))
+        self.assertEqual((rows, held["Black/Gold Label slab (its own grade bucket is not decided yet)"]), ([], 1))
 
     def test_buy_now_listing_is_held(self):
         s = sale(); s["sources"][0].update(src="neon", venue="goldin", url="https://www.fanaticscollect.com/buy-now/abc")
@@ -63,6 +63,16 @@ class Build(unittest.TestCase):
         self.assertEqual(E.family("mazi:bk:2023-panini-prizm:victor-wembanyama:136~choice-nebula"),
                          "mazi:bk:2023-panini-prizm:victor-wembanyama:136")
         self.assertEqual(E.family("ptcgio:dp5-97"), "ptcgio:dp5-97")
+
+    def test_gold_label_and_unpaid_are_held(self):
+        s = sale(); s["title"] = "1986 Fleer Basketball Michael Jordan ROOKIE #57 SGC 10 PRISTINE, GOLD LABEL"
+        rows, held = E.build([s], set())
+        self.assertEqual((rows, held["Black/Gold Label slab (its own grade bucket is not decided yet)"]), ([], 1))
+        s = sale(); s["title"] = "2018 Topps Gold Label Framed Autograph Ohtani PSA 10"
+        self.assertEqual(len(E.build([s], set())[0]), 1)            # Topps Gold Label is a product, not a slab label
+        s = sale(); s["payment"] = "Unpaid"
+        rows, held = E.build([s], set())
+        self.assertEqual((rows, held["Fanatics: unpaid when captured (re-check later)"]), ([], 1))
 
     def test_not_eligible_at_all(self):
         rows, held = E.build([sale(price=99_000), sale(status="needs_review"), sale(status="mint_candidate"),
