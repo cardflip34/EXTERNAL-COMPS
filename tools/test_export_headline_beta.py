@@ -50,11 +50,16 @@ class Build(unittest.TestCase):
         self.assertEqual((rows, held["Fanatics buy-now listing (an asking price, not a sale)"]), ([], 1))
 
     def test_corroboration(self):
-        row = {"price": 900_000.0}
-        self.assertFalse(E.corroborated(row, [310.0, 280.0], []))                 # Garchomp LV.X: hundreds of dollars
-        self.assertTrue(E.corroborated(row, [], [120_000.0]))                     # a parallel of the same card at 1/7.5
-        self.assertTrue(E.corroborated({"price": 2_333_250.0}, [250_000.0], []))  # 1952 Mantle PSA 8 vs PSA 7 sales
-        self.assertFalse(E.corroborated(row, [], []))                             # nothing at all
+        row = {"price": 900_000.0, "venue": "fanatics", "source_transaction_id": "WEEKLY6518934"}
+        self.assertFalse(E.corroborated(row, [], [310.0, 280.0], [])[0])                          # Garchomp: hundreds
+        self.assertFalse(E.corroborated(row, [], [], [("fanatics", "WEEKLY6518930", 312_000.0)])[0])  # weekly vouching weekly
+        self.assertTrue(E.corroborated(row, [], [], [("goldin", "L1", 120_000.0)])[0])             # another venue
+        prem = {"price": 132_000.0, "venue": "fanatics", "source_transaction_id": "PREMIER1"}
+        self.assertFalse(E.corroborated(prem, [7_345.0], [23_500.0], [])[0])                        # same grade decides
+        self.assertTrue(E.corroborated(prem, [], [23_500.0], [])[0])                                # else any grade
+        self.assertTrue(E.corroborated({"price": 2_333_250.0, "venue": "heritage", "source_transaction_id": "HA-6"},
+                                       [], [250_000.0], [])[0])
+        self.assertFalse(E.corroborated(row, [], [], [])[0])
         self.assertEqual(E.family("mazi:bk:2023-panini-prizm:victor-wembanyama:136~choice-nebula"),
                          "mazi:bk:2023-panini-prizm:victor-wembanyama:136")
         self.assertEqual(E.family("ptcgio:dp5-97"), "ptcgio:dp5-97")

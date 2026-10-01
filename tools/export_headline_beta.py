@@ -47,12 +47,28 @@ def family(card_id):
     return (card_id or "").split("~", 1)[0]
 
 
-def corroborated(row, card_prices, family_prices):
-    """A headline sale loads only if some OTHER sale of the same card (any grade) or of its parallel family is within
-    CORROBORATE x of its price. Canary 2026-09-30: a $900,000 Garchomp LV.X PSA 10 (the card sells for hundreds) came
-    straight from a Fanatics weekly record with nothing else to back it."""
+def independent(row, evidence_venue, evidence_id):
+    """Fanatics WEEKLY records do not vouch for Fanatics WEEKLY records: the bogus-looking Pokemon LV.X / ex sales
+    ($900K Garchomp, $204K + $108K Palkia, $156K + $120K Lugia) all came in pairs from Fanatics weekly auctions."""
+    weekly = lambda v, i: v == "fanatics" and str(i or "").startswith("WEEKLY")
+    return not (weekly(row["venue"], row["source_transaction_id"]) and weekly(evidence_venue, evidence_id))
+
+
+def corroborated(row, same_grade, card_prices, family):
+    """(ok, why). A headline sale loads only if another sale backs its price within CORROBORATE x, judged in order:
+      1. the same card in the same grade, when it has any sale (a base Ohtani BCRA-SO auto BGS 9.5 at $132K vs its
+         BGS 9.5 sales topping out at $7,345 fails here even though a PSA 10 sold for $23.5K);
+      2. else the same card in any grade;
+      3. else the card's parallel family [(venue, source id, price)] -- independent records only.
+    Rows that fail go to Andy's review list; a real gem-mint vintage record can fail too (lower grades sell for 2-5%)."""
     floor = row["price"] / CORROBORATE
-    return any(p >= floor for p in card_prices) or any(p >= floor for p in family_prices)
+    if same_grade:
+        return (any(p >= floor for p in same_grade), "same-grade sales top out at $%s" % format(int(max(same_grade)), ","))
+    if card_prices:
+        return (any(p >= floor for p in card_prices), "other-grade sales top out at $%s" % format(int(max(card_prices)), ","))
+    fam = [p for v, i, p in family if independent(row, v, i)]
+    return (any(p >= floor for p in fam),
+            ("parallel sales top out at $%s" % format(int(max(fam)), ",")) if fam else "no independent sale of the card or its parallels")
 
 
 def primary_source(s):
@@ -122,11 +138,11 @@ def check_against_beta(cur, rows, canon_family=None, approved=frozenset(), revie
         seen_ids.add(sid); seen_keys.add(ok); seen_src.add((v, stx))
     cur.execute("""SELECT card_id, grade, price::float, sold_at::date, provider FROM public.beta_sales
                    WHERE card_id = ANY(%s) AND published AND price_eligible""", (sorted({r["card_id"] for r in rows}),))
-    by_cg, by_card = defaultdict(list), defaultdict(list)
+    by_cg, by_card, by_cg_own = defaultdict(list), defaultdict(list), defaultdict(list)
     for cid, g, p, d, prov in cur.fetchall():
         by_cg[(cid, g)].append((p, d))
         if prov != PROVIDER:                       # our own headline rows never vouch for each other
-            by_card[cid].append(p)
+            by_card[cid].append(p); by_cg_own[(cid, g)].append(p)
     out = []
     for r in rows:
         if r["sale_id"] in seen_ids or r["occurrence_key"] in seen_keys or (r["venue"], r["source_transaction_id"]) in seen_src:
@@ -144,17 +160,55 @@ def check_against_beta(cur, rows, canon_family=None, approved=frozenset(), revie
                                   | {"why": "%.0fx off the card's median $%s in this grade" % (FENCE, format(int(med), ",")),
                                      "best_other": med})
                 continue
-        fam = [p for sid, p in (canon_family or {}).get(family(r["card_id"]), []) if sid != r["sale_id"]]
+        fam = [(v, i, p) for sid, v, i, p in (canon_family or {}).get(family(r["card_id"]), []) if sid != r["sale_id"]]
+        ok, why = corroborated(r, by_cg_own.get((r["card_id"], r["grade"]), []), by_card.get(r["card_id"], []), fam)
         # a sale Andy approved by name is corroborated by that check
-        if r["sale_id"] not in approved and not corroborated(r, by_card.get(r["card_id"], []), fam):
+        if r["sale_id"] not in approved and not ok:
             if review is not None:
                 review.append({k: r[k] for k in ("sale_id", "card_id", "venue", "price", "sold_at", "grade", "_title", "source_url")}
-                              | {"why": "no other sale of this card or its parallels within %.0fx" % CORROBORATE,
-                                 "best_other": max(by_card.get(r["card_id"], []) + fam, default=None)})
+                              | {"why": why + " (needs one within %.0fx)" % CORROBORATE, "best_other": None})
             held[f"uncorroborated: no other sale of this card or its parallels within {CORROBORATE:.0f}x (to Andy's review)"] += 1
             r["_uncorroborated"] = True; continue
         out.append(r)
     return out, held
+
+
+def audit(cur, bc, manifest_path, approved, stamp):
+    """Re-check rows already loaded (a manifest) against today's price checks. Read-only; writes a revert manifest."""
+    m = json.load(open(manifest_path))
+    ids = set(m["sale_ids"])
+    rows = [r for r in json.load(open(m["plan"]))["insert"] if r["sale_id"] in ids]
+    cur.execute("""SELECT card_id, grade, price::float, provider FROM public.beta_sales
+                   WHERE card_id = ANY(%s) AND published AND price_eligible""", (sorted({r["card_id"] for r in rows}),))
+    by_cg, by_card = defaultdict(list), defaultdict(list)
+    for cid, g, p, prov in cur.fetchall():
+        if prov != PROVIDER:
+            by_cg[(cid, g)].append(p); by_card[cid].append(p)        # by_cg: same card + grade, non-headline
+    bc.rollback()
+    canon = json.load(open(REPORT))
+    fam_of = defaultdict(list)
+    for s in canon:
+        if s["mazi"]["status"] in ("resolved", "resolved_needs_review") and s["mazi"]["candidates"]:
+            src = primary_source(s)
+            if src:
+                fam_of[family(s["mazi"]["candidates"][0]["card_id"])].append(
+                    (f"mazi-hl:{s['venue']}:{src['source_id']}", s["venue"], str(src["source_id"]), float(s["price"])))
+    bad = []
+    for r in rows:
+        if r["sale_id"] in approved:
+            continue
+        same = by_cg.get((r["card_id"], r["grade"]), [])
+        fam = [(v, i, p) for sid, v, i, p in fam_of.get(family(r["card_id"]), []) if sid != r["sale_id"]]
+        ok, why = corroborated(r, same, by_card.get(r["card_id"], []), fam)
+        if not ok:
+            bad.append((r, why))
+    for r, why in sorted(bad, key=lambda x: -x[0]["price"]):
+        print(f"  FAIL ${r['price']:,.0f} {r['venue']} {r['grade']} {r['card_id']} | {r['_title'][:60]} | {why}")
+    out = OUT / f"revert_audit_{stamp}.json"
+    json.dump({"sale_ids": [r["sale_id"] for r, _ in bad], "why": {r["sale_id"]: w for r, w in bad},
+               "audited": str(manifest_path)}, open(out, "w"), indent=1)
+    print(f"audited {len(rows)} loaded rows: {len(bad)} fail today's checks -> revert manifest {out} (NOT applied)")
+    return 0
 
 
 def main():
@@ -163,6 +217,7 @@ def main():
     ap.add_argument("--revert", type=Path)
     ap.add_argument("--approved", type=Path, help="file with one approved $1M+ sale_id per line")
     ap.add_argument("--limit", type=int, help="canary: insert at most this many")
+    ap.add_argument("--audit", type=Path, help="re-check the rows of an applied manifest; writes a revert manifest of failures")
     ap.add_argument("--yes-i-understand-beta", action="store_true")
     ap.add_argument("--beta-password-file", type=Path, default=Path(os.path.expanduser("~/private/beta-password")))
     a = ap.parse_args()
@@ -183,6 +238,8 @@ def main():
         print(f"REVERT: unpublished {n} of {len(ids)} (summaries {C.refresh_summaries(bc, cur)})")
         return 0
     approved = {l.strip() for l in open(a.approved)} if a.approved else set()
+    if a.audit:
+        return audit(cur, bc, a.audit, approved, stamp)
     canon = json.load(open(REPORT))
     rows, held = build(canon, approved)
     canon_family = defaultdict(list)                # every resolved headline sale, by parallel family, for corroboration
@@ -191,7 +248,7 @@ def main():
             src = primary_source(s)
             if src and "/buy-now/" not in (src.get("url") or ""):
                 canon_family[family(s["mazi"]["candidates"][0]["card_id"])].append(
-                    (f"mazi-hl:{s['venue']}:{src['source_id']}", float(s["price"])))
+                    (f"mazi-hl:{s['venue']}:{src['source_id']}", s["venue"], str(src["source_id"]), float(s["price"])))
     review = []
     ins, held2 = check_against_beta(cur, rows, canon_family, approved, review)
     bc.rollback()
