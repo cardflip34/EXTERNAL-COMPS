@@ -87,6 +87,17 @@ check(sp == {"7": 1000.0, "8": 99000.0, "9": 5000.0}, "each lot gets ITS Lot-N p
 MIXED = '''<a href="/archives/2023/Fall/1/a">x</a> Lot 1 - $7,200,000 <a href="/archives/2021/Summer/1/b">y</a> Lot 1 - $6,606,296'''
 check([l["sold_price"] for l in parse_rea_listing(MIXED)] == [7200000.0, 6606296.0], "repeated lot numbers fall back to the segment")
 
+print("== memorabilia with a year and a grader is not a card ==")
+for title in ("High Grade 1953 Walt Alston Single-Signed Baseball (PSA)", "1965-67 Mickey Mantle New York Yankees Game Used Bat - Newly Discovered! (PSA GU 9.5)",
+              "Exceptional Photomatched 1922 1924 Babe Ruth New York Yankees Game Used Bat Psadna Gu 10", "1938 Lou Gehrig New York Yankees Game Used Road Jersey",
+              "1934 New York Yankees Team Signed Baseball 24 Signatures Including Babe Ruth And Lou Gehrig",
+              "1984 Michael Jordan Chicago Bulls Signed Game Worn Nike Air Ship Rookie Sneakers"):
+    check(not is_single_card(title), "memorabilia skipped: " + title[:46])
+for title in ("1947 1966 Exhibits Gil Hodges Signed B On Cap Variation Psadna Auto 9", "1952 Topps #311 Mickey Mantle Signed Card PSA/DNA 8",
+              "2003-04 Upper Deck Exquisite Collection Rookie Patch Autograph 78 LeBron James BGS 9.5",
+              "2018 Topps Chrome Game Used Relic Patch Card Shohei Ohtani #GUR-SO PSA 10"):
+    check(is_single_card(title), "card kept: " + title[:46])
+
 print("== Huggins & Scott (same platform) ==")
 HS = '''<div><a href="/auction/2025/Fall/1/1961-topps-dice-game-willie-mays-psa-ex-5" class="flex">
 Willie Mays Lot 1 - $156,000 </a></div>
