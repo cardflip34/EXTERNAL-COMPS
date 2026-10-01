@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.expanduser("~/whatnot-sniper"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"
 EXPORT = os.path.expanduser("~/private/fixtures/headline_export")
 OUT = os.path.expanduser("~/mazi_headline/lotphoto")
@@ -32,16 +33,22 @@ DISPLAY_OVER = 600_000
 
 
 def headline_rows():
-    """Published headline sales at goldin / fanatics, from the loader manifests, minus anything since unpublished."""
-    rows, unpub = {}, set()
-    for f in glob.glob(os.path.join(EXPORT, "revert_*.json")):
-        unpub |= set(json.load(open(f)).get("sale_ids") or [])
-    for m in sorted(glob.glob(os.path.join(EXPORT, "manifest_*.json"))):
-        mm = json.load(open(m))
-        for r in json.load(open(mm["plan"]))["insert"]:
-            if r["sale_id"] in mm["sale_ids"] and r["venue"] in ("goldin", "fanatics") and r["sale_id"] not in unpub:
-                rows[r["sale_id"]] = {k: r[k] for k in ("sale_id", "card_id", "venue", "source_transaction_id", "source_url")}
-    return list(rows.values())
+    """Published headline sales at goldin / fanatics -- read from the beta itself. (The first run inferred "unpublished"
+    from every revert_*.json file, which wrongly included the audit's revert_audit_* lists that were never applied, and
+    skipped 9 published sales, e.g. the $461,160 Yamamoto SuperFractor, 2026-10-01.)"""
+    import headline_sales as H
+    b = H.beta()
+    try:
+        rows = b.execute("""SELECT sale_id, card_id, venue, source_transaction_id, source_url FROM public.beta_sales
+                            WHERE provider = 'mazi_headline' AND published AND venue IN ('goldin', 'fanatics')""").fetchall()
+    finally:
+        b.rollback(); b.close()
+    return [dict(zip(("sale_id", "card_id", "venue", "source_transaction_id", "source_url"), r)) for r in rows]
+
+
+def have_photo(house, key):
+    d = os.path.join(ROOT, "lotphoto_" + house, key)
+    return os.path.isdir(d) and any(re.fullmatch(r"01\.(jpg|jpeg|png|webp)", f) for f in os.listdir(d))
 
 
 def origins(rows):
@@ -100,8 +107,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--sleep", type=float, default=1.0)
+    ap.add_argument("--refetch", action="store_true", help="also re-download sales that already have a lot photo")
     a = ap.parse_args()
     rows = headline_rows()
+    if not a.refetch:
+        rows = [r for r in rows if not have_photo(r["venue"], r["source_transaction_id"])]   # a delta run by default
     urls = origins(rows)
     print(f"published headline sales: goldin {sum(r['venue'] == 'goldin' for r in rows)}, fanatics {sum(r['venue'] == 'fanatics' for r in rows)}; "
           f"with a candidate URL: {sum(1 for r in rows if urls.get(r['sale_id']))}", flush=True)
