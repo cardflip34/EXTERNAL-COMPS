@@ -51,7 +51,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.environ.get("MAZI_COMP_IMAGES_ROOT", "/Volumes/MAZI_EVIDENCE_6TB/comp_images")
-SOURCES = ("scp_catalog", "ebay", "fanatics", "tcgplayer_catalog")
+# lotphoto_*: the front photo of a headline sale's own Goldin / Fanatics lot (operator exception 2026-10-01, CLAUDE.md
+# Hard Gates) -- display art only, one folder per house so a house can be removed in one step; tools/lotphoto_fetch.py
+SOURCES = ("scp_catalog", "ebay", "fanatics", "tcgplayer_catalog", "lotphoto_goldin", "lotphoto_fanatics")
 # keys are hashes or marketplace item ids; anything with a separator in it is not one of ours
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 EXTS = (".jpg", ".webp", ".png", ".jpeg")

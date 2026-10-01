@@ -30,6 +30,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.expanduser("~/whatnot-sniper"))      # the Mini's project (Fanatics crawler) when run from staging
 OUT = os.path.expanduser("~/mazi_headline")
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "headline_seed_2026.json")
+IMAGES = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"             # lot photos: comp_images/lotphoto_<house>/<source id>/01.jpg
 NEON_SOURCES = ["goldin", "fanatics", "rea", "heritage", "ebay"]
 
 YEAR_RE = re.compile(r"\b(19[0-9]{2}|20[0-4][0-9])(?:[-/](\d{2}))?\b")
@@ -121,18 +122,21 @@ def collect_neon(min_price, since):
     with psycopg.connect(os.environ["MAZI_DB_URL"], connect_timeout=20) as c:
         c.execute("SET statement_timeout='300s'")
         out = []
-        for i, s, sid, t, p, d, bo, url in c.execute(
+        for i, s, sid, t, p, d, bo, url, lot_id, pin, img in c.execute(
                 """SELECT id, source_code, source_item_id, title, sold_price, sold_date, best_offer,
                           -- Goldin rows keep the lot URL in raw.url only (75 of 92 loaded Goldin rows had no source link)
-                          coalesce(canonical_source_url, source_url, raw->>'url')
+                          coalesce(canonical_source_url, source_url, raw->>'url'),
+                          raw->>'lot_id', raw->>'primary_image_name', raw->>'image_url'
                    FROM public.external_transactions WHERE sold_price >= %s AND sold_date >= %s AND source_code = ANY(%s)
                      AND NOT coalesce(best_offer, false)
                      -- Fanatics buy-now LISTINGS (asking prices, e.g. a "$1,000,000" Eevee PSA 10) were imported as sales
                      -- in June; 5 reached the beta in the 2026-09-30 canary. A listing is not a sale.
                      AND coalesce(canonical_source_url, source_url, raw->>'url', '') NOT LIKE '%%/buy-now/%%'""",
                 (min_price, since, NEON_SOURCES)):
+            image = ("https://d2tt46f3mh26nl.cloudfront.net/public/Lots/%s/%s@2x" % (lot_id, pin)) if (s == "goldin" and lot_id and pin) else img
             out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in ("goldin", "heritage", "rea") else "unknown",
-                        "source_id": sid, "neon_id": i, "title": t, "price": float(p), "date": d.isoformat(), "prec": "day", "url": url})
+                        "source_id": sid, "neon_id": i, "title": t, "price": float(p), "date": d.isoformat(), "prec": "day", "url": url,
+                        "image": image})
         c.rollback()
     return out
 
@@ -178,8 +182,15 @@ def canonicalize(rows, players):
     for g in groups:
         best = min(g["rows"], key=lambda r: ({"fanatics_api": 0, "neon": 1, "seed": 2}[r["src"]], r["prec"] != "day"))
         venue = next((r["venue"] for r in g["rows"] if r["venue"] not in ("unknown", "private")), best["venue"])
+        lot = next((r for r in g["rows"] if r["src"] in ("fanatics_api", "neon") and r["venue"] in ("goldin", "fanatics")
+                    and r.get("source_id")), None)
+        local = None
+        if lot and os.path.isfile(os.path.join(IMAGES, "lotphoto_" + lot["venue"], str(lot["source_id"]), "01.jpg")):
+            local = "/img/lotphoto_%s/%s" % (lot["venue"], lot["source_id"])
         out.append({"title": best["title"], "price": best["price"], "date": best["date"], "prec": best["prec"], "venue": venue,
                     "payment": best.get("payment"),
+                    # the lot's own front photo (display art only, CLAUDE.md 2026-10-01): origin URL + our served copy
+                    "lot_image_url": (lot or {}).get("image"), "lot_image_local": local,
                     "sale_type": best["sale_type"], "sources": [{k: r.get(k) for k in ("src", "venue", "source_id", "neon_id", "url", "price", "date")}
                                                                  for r in g["rows"]],
                     **parse_title(best["title"]), "player_keys": sorted(players.get(id(best), set()))})
