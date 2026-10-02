@@ -12,41 +12,100 @@ both are cheap to solve here rather than in every client:
   * SCP images are keyed by sha1(image_url)[:20], not by the sale's item id. /r does that hash
     server-side, so a client with a canonical row needs no crypto at all.
 
-Endpoints (GET/HEAD only -- there is no write path):
-  /                      usage
-  /healthz               json: per-source counts, disk free
-  /img/<source>/<key>    the image; extension resolved automatically
-  /r?u=<image_url>       302 to the right /img/ path for a pricecharting/SCP image URL
+TWO DOORS (2026-10-01, "lock down the mini image server")
+---------------------------------------------------------
+Until 2026-10-01 one listener on 0.0.0.0:8510 served the WHOLE archive (~5.9M photos: 4.27M eBay
+seller photos, 1.2M Fanatics, 425K SCP) to anyone, because the Mini publishes it through Tailscale
+Funnel at https://stavross-mac-mini.tail9fccf8.ts.net. eBay item ids are public and guessable. The
+site only ever shows ~398K of those pictures. So the server now has two doors in one process:
+
+  PUBLIC door    127.0.0.1:8510 (default). Tailscale Serve/Funnel proxies here and ONLY here, so
+                 everything that arrives through the hostname -- public visitors and tailnet devices
+                 alike -- is treated as public. Answers:
+                   GET/HEAD /img/<source>/<key>  only when the key is on the PUBLIC ALLOW-LIST
+                                                 (every image key beta_catalog.image_small/_large
+                                                 references, built by tools/build_image_allowlist.py,
+                                                 plus an operator "staged" file), or the source is a
+                                                 curated lot-photo source (lotphoto_goldin,
+                                                 lotphoto_fanatics -- the whole folder; removing the
+                                                 file is the takedown, and the catalog-art apply
+                                                 verifies the served sha256 BEFORE the beta row
+                                                 exists, so they must be reachable first).
+                   GET/HEAD /healthz             {"ok": true|false} and nothing else.
+                 Everything else -- unlisted keys, the bulk ebay/fanatics/tcgplayer archives, /card/,
+                 /r, the usage page -- gets ONE identical 404 (same status, body and headers as a
+                 real miss), decided in memory BEFORE any disk access. So the public side can't be
+                 used to learn which keys exist, and random keys no longer cost 6TB seeks.
+
+  INTERNAL door  <tailnet IP>:8512 (default "tailnet:8512": the Mini's own 100.64/10 and
+                 fd7a:115c:a1e0::/48 addresses, read from ifconfig). The full, previous behaviour:
+                 every source, /card/, /r, usage, the full /healthz JSON. It is NEVER behind
+                 Serve/Funnel; tailnet devices reach it at http://stavross-mac-mini.tail9fccf8.ts.net:8512
+                 (MagicDNS + WireGuard). A connection is refused unless its SOURCE ADDRESS is in the
+                 internal allow (default: the tailnet ranges only). Loopback is NOT allowed by default:
+                 Serve/Funnel traffic arrives from 127.0.0.1, so if anyone ever pointed Serve at this
+                 port by mistake, the archive still would not go public.
+
+Access is decided by which socket a connection arrived on plus its TCP source address -- never by a
+request header. Tailscale's identity headers (Tailscale-User-Login, Tailscale-Funnel-Request) are
+only LOGGED as present/absent, because it has not been verified on this box that tailscaled strips
+client-sent copies. A spoofed header changes nothing.
+
+ALLOW-LIST FILE (see tools/build_image_allowlist.py)
+  ~/mazi_local_evidence/image_allowlist/public_allowlist.txt   (MAZI_IMAGE_ALLOWLIST)
+      "# mazi-image-allowlist v1" / "<source>/<key>" lines / "# end count=N". Loaded at start,
+      re-read when it changes (polled), and a file that fails to parse is IGNORED: the last good
+      list stays in force. If no list has EVER loaded, the public door fails CLOSED for the bulk
+      sources (ebay, fanatics, tcgplayer_catalog) but keeps serving scp_catalog and the lot photos,
+      so the site does not go blank; it says so in the log.
+  ~/mazi_local_evidence/image_allowlist/staged.txt             (MAZI_IMAGE_ALLOWLIST_STAGED)
+      optional, hand-edited: "<source>/<key>" or full ".../img/<source>/<key>" URLs, one per line.
+      For keys about to be published (e.g. the VeeFriends apply HEADs the public URL BEFORE it
+      writes the beta row). Deleting the file un-stages everything.
+
+Endpoints (GET/HEAD only -- there is no write path; write verbs get 405 on both doors):
+  /                      usage                                         (internal)
+  /healthz               json: per-source counts, disk free, allow-list (internal; public: ok only)
+  /img/<source>/<key>    the image; extension resolved automatically   (public: allow-listed only)
+  /r?u=<image_url>       302 to the right /img/ path for a pricecharting/SCP image URL (internal)
+  /card/<console>/<prod> the card's raw reference photo by SportsCardsPro slug           (internal)
 
 Serving:
-  /usr/bin/python3 external_engine/comp_image_server.py [--port 8510] [--host 0.0.0.0]
+  /usr/bin/python3 external_engine/comp_image_server.py
+      [--public-bind 127.0.0.1:8510] [--internal-bind tailnet:8512|off|HOST:PORT[,..]]
+      [--internal-allow 100.64.0.0/10,fd7a:115c:a1e0::/48] [--allowlist PATH] [--staged PATH]
+      [--public-mode enforce|observe] [--access-log PATH|-]
+  --public-mode observe serves the public door like the internal one but logs what enforce WOULD
+  have denied (decision=would_deny:...). Enforce is the default.
 
-EXPOSURE -- READ THIS BEFORE CHANGING ANYTHING. As of 2026-09-22 this is INTERNET-FACING: the
-Mini publishes it through Tailscale Funnel at https://stavross-mac-mini.tail9fccf8.ts.net, because
-Vercel cannot reach a LAN address and the front end needs the photos. It used to say "LAN only, do
-not put it on a public interface"; that is no longer true and pretending otherwise is how a wrong
-assumption gets built on.
-
-What that means in practice: there is NO authentication, so everything reachable here is public to
-anyone who learns the hostname. That is acceptable only because the surface is deliberately tiny --
-GET/HEAD on archived card photos, keys that must match KEY_RE, paths that must resolve inside ROOT,
-and every write verb answered 405. Keep it that way. Do not add an endpoint that lists keys, reads
-an arbitrary path, echoes a query back, or accepts a body. `tailscale funnel reset` takes it back
-off the internet.
+Logging: lifecycle and allow-list events go to stderr (the supervisor's comp_image_server.out).
+Requests go to a rotating access log (~/Library/Logs/mazi_external_comps/comp_image_access.log,
+20 MB x 5): door, mode, decision, verb, status, bytes, path, a coarse peer class
+(loopback/tailnet/lan/other -- never the address), header PRESENCE flags for Tailscale-User-Login
+(tsu) and Tailscale-Funnel-Request (tsf) -- never values --, a user-agent family and the referer's
+host only.
 
 TCC: the 6TB is unreadable to launchd GUI agents. Run it from the supervisor (which is started
 through ssh localhost and inherits Full Disk Access), not from a plain LaunchAgent.
+`tailscale funnel reset` takes the public door off the internet entirely.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
+import logging
+import logging.handlers
 import os
 import re
+import socket
+import socketserver
+import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -59,6 +118,350 @@ KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 EXTS = (".jpg", ".webp", ".png", ".jpeg")
 CTYPE = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".png": "image/png"}
 SCP_HOST_HINT = "pricecharting.com"
+
+
+def valid_key(key: str | None) -> bool:
+    """KEY_RE, and never a dots-only key ('.', '..'): those are path components, not ids."""
+    return bool(key) and bool(KEY_RE.match(key)) and key.strip(".") != ""
+
+
+# ---------------------------------------------------------------------------------------------
+# PUBLIC ALLOW-LIST
+#
+# What the public door may serve. Built from the beta by tools/build_image_allowlist.py (every
+# /img/<source>/<key> that beta_catalog.image_small / image_large points at on our host), plus an
+# optional hand-edited staged file. Held in memory as {source: frozenset(keys)} (~400K keys, ~45 MB).
+ALLOWLIST_MAGIC = "# mazi-image-allowlist v1"
+ALLOWLIST_DIR = os.path.expanduser("~/mazi_local_evidence/image_allowlist")
+ALLOWLIST_PATH = os.environ.get("MAZI_IMAGE_ALLOWLIST", os.path.join(ALLOWLIST_DIR, "public_allowlist.txt"))
+STAGED_PATH = os.environ.get("MAZI_IMAGE_ALLOWLIST_STAGED", os.path.join(ALLOWLIST_DIR, "staged.txt"))
+ALLOWLIST_POLL_S = float(os.environ.get("MAZI_IMAGE_ALLOWLIST_POLL_S", "30"))
+ALLOWLIST_MAX_BYTES = 256 * 1024 * 1024
+# curated, small, reviewed one by one: the whole folder is public (see module docstring)
+PUBLIC_WHOLE_SOURCES = ("lotphoto_goldin", "lotphoto_fanatics")
+# if NO list has ever loaded: these stay public so the site does not go blank; everything else 404s
+NO_LIST_OPEN_SOURCES = ("scp_catalog",)
+_END_RE = re.compile(r"^# end count=(\d+)$")
+_META_RE = re.compile(r"^#\s*([a-z_]+)=(\S*)")
+_IMG_PATH_RE = re.compile(r"^(?:https?://[^/\s]+)?/img/([A-Za-z0-9_]+)/([^/?#\s]+)/?$")
+
+
+class AllowListError(ValueError):
+    pass
+
+
+def _entry(source: str, key: str, where: str) -> tuple:
+    if source not in SOURCES:
+        raise AllowListError(f"{where}: unknown source {source!r}")
+    if not valid_key(key):
+        raise AllowListError(f"{where}: invalid key")
+    return source, key
+
+
+def parse_allowlist(src) -> tuple[dict, dict]:
+    """src: the file's text, or any iterable of its lines (an open file streams it).
+    -> ({source: frozenset(keys)}, meta). Strict: a missing magic line, a missing or wrong
+    '# end count=N' trailer (= a truncated or half-written file), anything after the trailer, or any
+    malformed entry rejects the WHOLE file, so a bad build can never half-apply."""
+    lines = src.splitlines() if isinstance(src, str) else src
+    sets: dict = {s: set() for s in SOURCES}
+    meta: dict = {}
+    n, end, first = 0, None, True
+    for i, raw in enumerate(lines, start=1):
+        ln = raw.strip()
+        if first:
+            if ln != ALLOWLIST_MAGIC:
+                raise AllowListError("missing header line %r" % ALLOWLIST_MAGIC)
+            first = False
+            continue
+        if not ln:
+            continue
+        if end is not None:
+            raise AllowListError(f"line {i}: content after the '# end' trailer")
+        if ln.startswith("#"):
+            m = _END_RE.match(ln)
+            if m:
+                end = int(m.group(1))
+                continue
+            mm = _META_RE.match(ln)
+            if mm:
+                meta[mm.group(1)] = mm.group(2)
+            continue
+        source, sep, key = ln.partition("/")
+        if not sep:
+            raise AllowListError(f"line {i}: not <source>/<key>")
+        s, k = _entry(source, key, f"line {i}")
+        sets[s].add(k)
+        n += 1
+    if first:
+        raise AllowListError("empty file")
+    if end is None:
+        raise AllowListError("missing '# end count=N' trailer (truncated file?)")
+    if n != end:
+        raise AllowListError(f"trailer says {end} entries, file has {n}")
+    return {s: frozenset(v) for s, v in sets.items()}, meta
+
+
+def parse_staged(text: str) -> dict:
+    """Lenient format for the hand-edited staged file: '<source>/<key>' or a URL ending in
+    /img/<source>/<key>; blank lines and #comments ignored. Any malformed line rejects the file."""
+    sets: dict = {s: set() for s in SOURCES}
+    for i, raw in enumerate(text.splitlines(), start=1):
+        ln = raw.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        m = _IMG_PATH_RE.match(ln)
+        if m:
+            source, key = m.group(1), m.group(2)
+        else:
+            source, sep, key = ln.partition("/")
+            if not sep:
+                raise AllowListError(f"staged line {i}: not <source>/<key> or an /img/ URL")
+        s, k = _entry(source, key, f"staged line {i}")
+        sets[s].add(k)
+    return {s: frozenset(v) for s, v in sets.items() if v}
+
+
+def format_allowlist(entries: dict, meta: dict | None = None) -> str:
+    """The on-disk form parse_allowlist() accepts. Sorted, so two builds of the same data diff clean."""
+    out = [ALLOWLIST_MAGIC]
+    for k, v in (meta or {}).items():
+        out.append(f"# {k}={v}")
+    n = 0
+    for source in SOURCES:
+        for key in sorted(entries.get(source) or ()):
+            _entry(source, key, "format")
+            out.append(f"{source}/{key}")
+            n += 1
+    out.append(f"# end count={n}")
+    return "\n".join(out) + "\n"
+
+
+def _file_sig(path: str):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _check_size(path: str) -> None:
+    if os.path.getsize(path) > ALLOWLIST_MAX_BYTES:
+        raise AllowListError(f"file larger than {ALLOWLIST_MAX_BYTES} bytes")
+
+
+def _read_text(path: str) -> str:
+    _check_size(path)
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def load_allowlist_file(path: str) -> tuple[dict, dict]:
+    _check_size(path)
+    with open(path, encoding="utf-8") as f:
+        return parse_allowlist(f)
+
+
+class AllowList:
+    """The public allow-list plus the staged file, reloaded when either changes on disk.
+
+    Readers take one reference to the current dict and never see a half-built one (the swap is a
+    single attribute assignment). A reload that fails leaves the previous list in force."""
+
+    def __init__(self, path: str = ALLOWLIST_PATH, staged_path: str | None = STAGED_PATH,
+                 log=None) -> None:
+        self.path, self.staged_path = path, staged_path
+        self._main: dict | None = None          # None = never loaded
+        self._staged: dict = {}
+        self._sig_main = self._sig_staged = None
+        self._log = log or (lambda msg: sys.stderr.write(msg + "\n"))
+        self._lock = threading.Lock()
+        self.status: dict = {"loaded": False, "path": path, "staged_path": staged_path,
+                             "counts": None, "total": 0, "meta": {}, "loaded_at": None,
+                             "last_error": None, "last_error_at": None, "staged_total": 0,
+                             "staged_error": None}
+
+    # -- queries ---------------------------------------------------------------------------------
+    def loaded(self) -> bool:
+        return self._main is not None
+
+    def contains(self, source: str, key: str) -> bool:
+        m = self._main
+        if m is not None and key in m.get(source, ()):
+            return True
+        return key in self._staged.get(source, ())
+
+    # -- loading ---------------------------------------------------------------------------------
+    def maybe_reload(self) -> None:
+        with self._lock:
+            self._reload_main()
+            self._reload_staged()
+
+    def _reload_main(self) -> None:
+        sig = _file_sig(self.path)
+        if sig is None:
+            if self._sig_main != "missing":
+                self._sig_main = "missing"
+                if self._main is None:
+                    self._fail(f"allow-list file not found: {self.path}")
+                else:
+                    self._fail(f"allow-list file disappeared: {self.path}; keeping the last good list "
+                               f"({self.status['total']:,} keys)")
+            return
+        if sig == self._sig_main:
+            return
+        try:
+            sets, meta = load_allowlist_file(self.path)
+        except (OSError, UnicodeDecodeError, AllowListError) as e:
+            self._sig_main = sig                 # do not re-parse the same bad file every poll
+            keep = (f"keeping the last good list ({self.status['total']:,} keys, built_at="
+                    f"{self.status['meta'].get('built_at', '?')})" if self._main is not None else
+                    "no list has ever loaded")
+            self._fail(f"allow-list reload FAILED ({type(e).__name__}: {e}); {keep}")
+            return
+        self._main, self._sig_main = sets, sig
+        counts = {s: len(v) for s, v in sets.items() if v}
+        total = sum(counts.values())
+        self.status.update(loaded=True, counts=counts, total=total, meta=meta,
+                           loaded_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), last_error=None)
+        self._log(f"public allow-list loaded: {total:,} keys "
+                  f"({', '.join(f'{s} {n:,}' for s, n in counts.items())}) built_at={meta.get('built_at', '?')} "
+                  f"from {self.path}")
+
+    def _reload_staged(self) -> None:
+        if not self.staged_path:
+            return
+        sig = _file_sig(self.staged_path)
+        if sig == self._sig_staged:
+            return
+        if sig is None:
+            if self._staged:
+                self._log(f"staged allow-list removed: {self.staged_path}; 0 staged keys")
+            self._staged, self._sig_staged = {}, None
+            self.status.update(staged_total=0, staged_error=None)
+            return
+        try:
+            staged = parse_staged(_read_text(self.staged_path))
+        except (OSError, UnicodeDecodeError, AllowListError) as e:
+            self._sig_staged = sig
+            self.status["staged_error"] = f"{type(e).__name__}: {e}"
+            self._log(f"staged allow-list reload FAILED ({type(e).__name__}: {e}); keeping the last good "
+                      f"staged list ({self.status['staged_total']:,} keys)")
+            return
+        self._staged, self._sig_staged = staged, sig
+        total = sum(len(v) for v in staged.values())
+        self.status.update(staged_total=total, staged_error=None)
+        self._log(f"staged allow-list loaded: {total:,} keys from {self.staged_path}")
+
+    def _fail(self, msg: str) -> None:
+        self.status.update(last_error=msg, last_error_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        self._log(msg)
+        if self._main is None:
+            self._log("PUBLIC DOOR FAILING CLOSED for ebay, fanatics, tcgplayer_catalog (404 for every key) "
+                      "until an allow-list loads; scp_catalog and lot photos stay public so the site does "
+                      "not go blank")
+
+    def poll_forever(self, every_s: float = ALLOWLIST_POLL_S) -> None:
+        while True:
+            time.sleep(every_s)
+            try:
+                self.maybe_reload()
+            except Exception as e:  # noqa: BLE001 -- the poller must never die
+                self._log(f"allow-list poller error: {type(e).__name__}: {e}")
+
+
+def public_decision(source: str, key: str, allow: AllowList) -> tuple[bool, str]:
+    """May the PUBLIC door serve /img/<source>/<key>? -> (allowed, reason). Pure and in-memory: it
+    runs before any disk access, so a denied key costs nothing and reveals nothing."""
+    if source not in SOURCES or not valid_key(key):
+        return False, "bad_request"
+    if source in PUBLIC_WHOLE_SOURCES:
+        return True, "curated_source"
+    if allow.contains(source, key):
+        return True, "listed"
+    if allow.loaded():
+        return False, "unlisted"
+    if source in NO_LIST_OPEN_SOURCES:
+        return True, "no_list_open_source"
+    return False, "no_list_closed"
+
+
+# ---------------------------------------------------------------------------------------------
+# PEERS (internal door) -- decided on the TCP source address, never on a header
+TAILNET_NETS = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+DEFAULT_INTERNAL_ALLOW = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+DEFAULT_INTERNAL_BIND = "tailnet:8512"
+DEFAULT_PUBLIC_BIND = "127.0.0.1:8510"
+
+
+def _ip(host: str):
+    try:
+        ip = ipaddress.ip_address((host or "").split("%")[0])
+    except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip
+
+
+def parse_nets(spec: str) -> tuple:
+    return tuple(ipaddress.ip_network(p.strip(), strict=False) for p in (spec or "").split(",") if p.strip())
+
+
+def peer_allowed(host: str, nets) -> bool:
+    ip = _ip(host)
+    return ip is not None and any(ip.version == n.version and ip in n for n in nets)
+
+
+def peer_class(host: str) -> str:
+    ip = _ip(host)
+    if ip is None:
+        return "other"
+    if ip.is_loopback:
+        return "loopback"
+    if any(ip.version == n.version and ip in n for n in TAILNET_NETS):
+        return "tailnet"
+    if ip.is_private or ip.is_link_local:
+        return "lan"
+    return "other"
+
+
+def tailnet_addresses() -> list:
+    """This machine's tailnet addresses, read from ifconfig (Tailscale puts them on a utun)."""
+    try:
+        out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for m in re.finditer(r"\binet6?\s+([0-9A-Fa-f:.%a-z0-9]+)", out):
+        ip = _ip(m.group(1))
+        if ip is not None and any(ip.version == n.version and ip in n for n in TAILNET_NETS):
+            if str(ip) not in found:
+                found.append(str(ip))
+    return found
+
+
+def fmt_addr(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def parse_bind(spec: str) -> list:
+    """'127.0.0.1:8510' | '[fd7a::1]:8512' | 'tailnet:8512' | 'off' (comma-separated) -> [(host, port)]
+    with host 'tailnet' left symbolic (resolved at bind time)."""
+    out = []
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part or part.lower() in ("off", "none", "0"):
+            continue
+        if part.startswith("["):
+            host, _, port = part[1:].partition("]:")
+        else:
+            host, _, port = part.rpartition(":")
+        if not host or not port.isdigit():
+            raise ValueError(f"bad bind spec {part!r}: want HOST:PORT, [V6]:PORT or tailnet:PORT")
+        out.append((host, int(port)))
+    return out
+
 
 # ---------------------------------------------------------------------------------------------
 # READ-THROUGH SSD CACHE
@@ -81,7 +484,7 @@ _CSTATS = {"hit": 0, "miss": 0, "write": 0, "evicted": 0, "bytes": 0, "writable"
 
 
 # ---------------------------------------------------------------------------------------------
-# CARD LOOKUP BY SLUG
+# CARD LOOKUP BY SLUG  (internal door only since 2026-10-01: the site never builds /card/ URLs)
 #
 # The front end identifies a comp's card by raw->>'slug' -- the SportsCardsPro console/product slug,
 # e.g. basketball-cards-1996-topps-chrome/kobe-bryant-138 (proven 2026-09-22 from its read-only
@@ -153,7 +556,7 @@ def cache_base(source: str, key: str) -> str:
 
 def cached_file(source: str, key: str) -> str | None:
     """Cache hit path. Four stats on an SSD is microseconds; it is never worth an index."""
-    if not CACHE_ENABLED:
+    if not CACHE_ENABLED or source not in SOURCES or not valid_key(key):
         return None
     base = cache_base(source, key)
     for ext in EXTS:
@@ -217,30 +620,34 @@ def _cache_sweeper() -> None:
         time.sleep(1800)
 
 
-
 def image_path(source: str, key: str) -> str | None:
-    """Absolute path to this key's image, or None. Rejects anything that escapes ROOT.
+    """Absolute path to this key's image, or None. Rejects anything that escapes ROOT/<source>.
 
     Storage is sharded (<source>/<k0:2>/<k2:4>/<key>/) as of 2026-09-17 because a flat directory of
     1.4M siblings made each new write take >12 s. Existing images were NOT moved, so both layouts are
     live: sharded is checked first since that is where everything new lands, flat second so the ~1.5M
     already on disk keep resolving. Callers -- including the front end -- see one stable URL either way,
-    which is the whole reason the layout could change without anyone having to be told."""
-    if source not in SOURCES or not KEY_RE.match(key or ""):
+    which is the whole reason the layout could change without anyone having to be told.
+
+    Containment is per SOURCE (2026-10-01), not just per ROOT: the public door serves the curated
+    lot-photo folders whole, so a stray symlink in one of them must not reach into ebay/ or fanatics/."""
+    if source not in SOURCES or not valid_key(key):
         return None
     k = key.lower()
-    candidates = (
-        os.path.join(ROOT, source, k[:2] or "__", k[2:4] or "__", key),   # sharded
-        os.path.join(ROOT, source, key),                                   # legacy flat
-    )
+    src_root = os.path.join(ROOT, source)
     root_real = os.path.realpath(ROOT) + os.sep
+    src_real = os.path.realpath(src_root) + os.sep
+    candidates = (
+        os.path.join(src_root, k[:2] or "__", k[2:4] or "__", key),   # sharded
+        os.path.join(src_root, key),                                   # legacy flat
+    )
     for base in candidates:
         base = os.path.realpath(base)
-        if not base.startswith(root_real):
+        if not (base.startswith(root_real) and base.startswith(src_real)):
             continue                     # belt and braces: KEY_RE already bars separators
         for ext in EXTS:
             p = base + os.sep + "01" + ext
-            if os.path.isfile(p):
+            if os.path.isfile(p) and os.path.realpath(p).startswith(src_real):
                 return p
     return None
 
@@ -253,7 +660,10 @@ _COUNTS_CACHE: dict = {"at": 0.0, "val": None}
 COUNTS_TTL = 1800.0  # 30 min. The ledgers are 150MB+ and growing; this read is genuinely expensive
                      # and the numbers move by a few thousand an hour, so freshness costs more than
                      # it is worth.
-COUNTS_FILE = os.path.join(ROOT, "_backfill", "server_counts_cache.json")
+
+
+def _counts_file() -> str:
+    return os.path.join(ROOT, "_backfill", "server_counts_cache.json")
 
 
 def _refresh_counts_async() -> None:
@@ -274,7 +684,7 @@ def _load_cache_from_disk() -> None:
     downloader for the same spindle -- measured 2026-09-22: image serving went from 8ms to 17.6s
     while that ran. The server restarts often (it is supervised); the read must not."""
     try:
-        with open(COUNTS_FILE) as f:
+        with open(_counts_file()) as f:
             d = json.load(f)
         if isinstance(d.get("val"), dict):
             _COUNTS_CACHE["at"], _COUNTS_CACHE["val"] = d.get("at", 0.0), d["val"]
@@ -293,15 +703,13 @@ def counts(ttl: float = COUNTS_TTL) -> dict:
         # Cold: never block a request on the ledger read. Kick it off and answer honestly.
         _refresh_counts_async()
         return {"status": "counting", "note": "ledger scan in progress; retry shortly"}
-    if _COUNTS_CACHE["val"] is not None:
-        # STALE-WHILE-REVALIDATE. Always answer from cache, refresh behind it. A blocking recompute
-        # made /healthz time out entirely once the ledgers passed ~40MB (observed 2026-09-20: >60s,
-        # while image serving stayed at 8ms). A status endpoint that hangs is worse than one that is
-        # five minutes out of date -- it reads as "the server is down".
-        if now - _COUNTS_CACHE["at"] >= ttl:
-            _refresh_counts_async()
-        return _COUNTS_CACHE["val"]
-    return _compute_counts()
+    # STALE-WHILE-REVALIDATE. Always answer from cache, refresh behind it. A blocking recompute
+    # made /healthz time out entirely once the ledgers passed ~40MB (observed 2026-09-20: >60s,
+    # while image serving stayed at 8ms). A status endpoint that hangs is worse than one that is
+    # five minutes out of date -- it reads as "the server is down".
+    if now - _COUNTS_CACHE["at"] >= ttl:
+        _refresh_counts_async()
+    return _COUNTS_CACHE["val"]
 
 
 def _compute_counts() -> dict:
@@ -327,18 +735,19 @@ def _compute_counts() -> dict:
         out[src] = len(have)
     _COUNTS_CACHE["at"], _COUNTS_CACHE["val"] = time.time(), out
     try:
-        tmp = COUNTS_FILE + ".tmp"
+        cf = _counts_file()
+        tmp = cf + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"at": _COUNTS_CACHE["at"], "val": out}, f)
-        os.replace(tmp, COUNTS_FILE)
+        os.replace(tmp, cf)
     except OSError:
         pass
     return out
 
 
-USAGE = """comp image server
+USAGE = """comp image server -- INTERNAL door (full archive; tailnet only)
 
-  /healthz                 per-source counts and disk free
+  /healthz                 per-source counts, disk free, public allow-list status
   /img/<source>/<key>      the image (extension resolved for you)
   /r?u=<image_url>         302 to the image for a pricecharting/SCP url
   /card/<console>/<product>  the card's raw reference photo, by its SportsCardsPro slug
@@ -346,39 +755,191 @@ USAGE = """comp image server
 sources: {sources}
 
 examples
-  /img/scp_catalog/3108997300ae3e33f70d
-  /img/ebay/206162825097
+  /img/scp_catalog/<20-hex sha1 of the pricecharting image url>
+  /img/ebay/<ebay item id>
   /r?u=https%3A//storage.googleapis.com/images.pricecharting.com/abc/240.jpg
   /card/basketball-cards-1996-topps-chrome/kobe-bryant-138
 
+The PUBLIC door (Serve/Funnel -> 127.0.0.1:8510) serves only allow-listed /img/ keys and /healthz.
 read-only; GET and HEAD only.
 """.format(sources=", ".join(SOURCES))
 
 
+# ---------------------------------------------------------------------------------------------
+# ACCESS LOG -- no client addresses, no header values
+ACCESS_LOG_DEFAULT = os.path.expanduser("~/Library/Logs/mazi_external_comps/comp_image_access.log")
+_ACCESS = logging.getLogger("mazi.comp_image_server.access")
+_ACCESS.propagate = False
+_ACCESS.setLevel(logging.INFO)
+
+_UA_FAMILIES = (
+    ("mazi-", "mazi"), ("googlebot", "googlebot"), ("google-inspectiontool", "googlebot"),
+    ("googleother", "googlebot"), ("bingbot", "bingbot"), ("applebot", "applebot"),
+    ("facebookexternalhit", "facebook"), ("meta-externalagent", "facebook"), ("twitterbot", "twitter"),
+    ("slackbot", "slack"), ("slack-imgproxy", "slack"), ("discordbot", "discord"), ("whatsapp", "whatsapp"),
+    ("telegrambot", "telegram"), ("linkedinbot", "linkedin"), ("vercel", "vercel"),
+    ("python-urllib", "python"), ("python-requests", "python"), ("curl/", "curl"), ("wget", "wget"),
+    ("undici", "node"), ("node-fetch", "node"), ("node", "node"), ("bot", "otherbot"),
+    ("spider", "otherbot"), ("crawl", "otherbot"), ("mozilla", "browser"),
+)
+
+
+def ua_family(ua: str | None) -> str:
+    u = (ua or "").lower()
+    if not u:
+        return "none"
+    for needle, fam in _UA_FAMILIES:
+        if needle in u:
+            return fam
+    return "other"
+
+
+def referer_host(ref: str | None) -> str:
+    if not ref:
+        return "-"
+    try:
+        h = urllib.parse.urlsplit(ref).hostname or "-"
+    except ValueError:
+        return "?"
+    return re.sub(r"[^a-z0-9.-]", "", h.lower())[:64] or "?"
+
+
+def configure_access_log(dest: str | None) -> None:
+    """'-' or '' -> stderr; a path -> rotating file (20 MB x 5). Falls back to stderr if the file
+    cannot be opened, because losing the access log must never stop the server."""
+    for h in list(_ACCESS.handlers):
+        _ACCESS.removeHandler(h)
+    handler: logging.Handler
+    if dest and dest != "-":
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            handler = logging.handlers.RotatingFileHandler(dest, maxBytes=20 * 1024 * 1024, backupCount=5)
+        except OSError as e:
+            sys.stderr.write(f"access log {dest} unusable ({e}); logging requests to stderr\n")
+            handler = logging.StreamHandler(sys.stderr)
+    else:
+        handler = logging.StreamHandler(sys.stderr)
+    fmt = logging.Formatter("%(asctime)sZ %(message)s", "%Y-%m-%dT%H:%M:%S")
+    fmt.converter = time.gmtime          # UTC, like every other MAZI log stamp
+    handler.setFormatter(fmt)
+    _ACCESS.addHandler(handler)
+
+
+def _safe_path(p: str) -> str:
+    return re.sub(r"[^\x21-\x7e]", "?", p or "")[:200]
+
+
+# ---------------------------------------------------------------------------------------------
+# HTTP
+NOT_FOUND = (404, b"not found\n", "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+
+
+class DoorServer(ThreadingHTTPServer):
+    """One listening socket = one door. door='public' serves the allow-list view; door='internal'
+    serves everything but only to peers whose source address is in allowed_nets."""
+    daemon_threads = True
+
+    def __init__(self, addr, handler, *, door: str, allow: AllowList, public_mode: str = "enforce",
+                 allowed_nets=()) -> None:
+        if door not in ("public", "internal"):
+            raise ValueError(door)
+        self.address_family = socket.AF_INET6 if ":" in addr[0] else socket.AF_INET
+        self.door, self.allow, self.public_mode, self.allowed_nets = door, allow, public_mode, tuple(allowed_nets)
+        self.refused = 0
+        super().__init__(addr, handler)
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind does a reverse-DNS getfqdn() we never use; skip it
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), port
+
+    def handle_error(self, request, client_address) -> None:
+        """A client hanging up is routine (634 BrokenPipe tracebacks in the old log); anything else
+        is printed -- but without the client address the base class would include."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout)):
+            return
+        sys.stderr.write(f"request error on the {self.door} door ({peer_class(client_address[0])} peer):\n")
+        traceback.print_exc()
+
+    def verify_request(self, request, client_address) -> bool:
+        if self.door != "internal":
+            return True
+        if peer_allowed(client_address[0], self.allowed_nets):
+            return True
+        self.refused += 1
+        if self.refused <= 20 or self.refused % 1000 == 0:
+            sys.stderr.write(f"internal door refused a {peer_class(client_address[0])} peer "
+                             f"(refused so far: {self.refused})\n")
+        return False
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MaziCompImages/1.0"
+    server_version = "MaziCompImages/2.0"
+    sys_version = ""                     # do not advertise the Python version
     protocol_version = "HTTP/1.1"
 
+    # -- plumbing --------------------------------------------------------------------------------
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
+
+    def log_request(self, code="-", size="-"):
+        pass                             # written once per request by _access(), with the decision
+
+    def log_message(self, fmt: str, *args) -> None:
+        # errors from the base class (bad request lines, timeouts). No client address, by design.
+        _ACCESS.info("%s err %s", self._door_tag(), _safe_path(fmt % args))
+
+    def _door_tag(self) -> str:
+        return "pub" if getattr(self.server, "door", "public") == "public" else "int"
+
+    def _access(self) -> None:
+        h = self.headers
+        _ACCESS.info(
+            "%s %s %s %s %s %s %s peer=%s tsu=%d tsf=%d ua=%s ref=%s",
+            self._door_tag(), self.server.public_mode if self.server.door == "public" else "-",
+            self._decision, self.command, getattr(self, "_status", "-"), self._bytes,
+            _safe_path(self.path), peer_class(self.client_address[0]),
+            int(h is not None and "Tailscale-User-Login" in h), int(h is not None and "Tailscale-Funnel-Request" in h),
+            ua_family(h.get("User-Agent") if h is not None else None),
+            referer_host(h.get("Referer") if h is not None else None))
+
     def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+        self._bytes = len(body)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")   # images only, no credentials, LAN only
+        self.send_header("Access-Control-Allow-Origin", "*")   # images only, no credentials, no cookies
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _send_file(self, path: str, cache_to: str | None = None) -> None:
+    def _not_found(self) -> None:
+        """THE public 404: identical for an unlisted key, a key that does not exist, an unknown
+        source and an unknown route, so the public side is not an existence oracle."""
+        self._send(*NOT_FOUND)
+
+    def _send_file(self, path: str, public: bool, cache_to: str | None = None) -> None:
         """Stream the file; if cache_to is given, tee it to the SSD on the way past.
 
         Teeing rather than re-reading matters: the 6TB read is the expensive part, and we already
         have the bytes in hand. The copy is only committed (atomic rename) after a COMPLETE send, so
-        a client that disconnects mid-image can never leave a truncated file to be served forever."""
+        a client that disconnects mid-image can never leave a truncated file to be served forever.
+        The file is opened BEFORE the 200 goes out, so a vanished file is a clean 404; a failure
+        after the headers (usually the client hanging up) just closes the connection -- there is no
+        second response to send, and no traceback to write."""
         ext = os.path.splitext(path)[1].lower()
         try:
-            size = os.path.getsize(path)
+            f = open(path, "rb")
+            size = os.fstat(f.fileno()).st_size
+        except OSError:
+            return self._miss(public, "image unreadable")
+        with f:
+            self._bytes = size
             self.send_response(200)
             self.send_header("Content-Type", CTYPE.get(ext, "application/octet-stream"))
             self.send_header("Content-Length", str(size))
@@ -397,11 +958,10 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     tmp = cf = None          # caching is best-effort; serving is not
             try:
-                with open(path, "rb") as f:
-                    while chunk := f.read(256 * 1024):
-                        self.wfile.write(chunk)
-                        if cf:
-                            cf.write(chunk)
+                while chunk := f.read(256 * 1024):
+                    self.wfile.write(chunk)
+                    if cf:
+                        cf.write(chunk)
                 if cf:
                     cf.close()
                     cf = None
@@ -411,6 +971,9 @@ class Handler(BaseHTTPRequestHandler):
                     # keep the running total honest between sweeps -- otherwise /healthz reports an
                     # empty cache for up to 30 min after it has filled, which reads as "not working"
                     _CSTATS["bytes"] += size
+            except OSError:
+                self.close_connection = True       # client went away mid-body (BrokenPipe etc.)
+                self._decision += ":aborted"
             finally:
                 if cf:
                     try:
@@ -422,25 +985,79 @@ class Handler(BaseHTTPRequestHandler):
                         os.unlink(tmp)             # partial send -> never promote it
                     except OSError:
                         pass
-        except OSError:
-            self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
+    def _miss(self, public: bool, why: str) -> None:
+        if public:
+            return self._not_found()
+        return self._send(404, (why + "\n").encode(), "text/plain; charset=utf-8")
+
+    def _serve_img(self, source: str, key: str, public: bool) -> None:
+        if source not in SOURCES or not valid_key(key):
+            return self._miss(public, "no image for that source/key")
+        hit = cached_file(source, key)
+        if hit:
+            _CSTATS["hit"] += 1
+            return self._send_file(hit, public)                 # SSD; already the fast copy
+        p = image_path(source, key)
+        if p:
+            _CSTATS["miss"] += 1
+            return self._send_file(p, public, cache_to=cache_base(source, key) + os.path.splitext(p)[1].lower())
+        return self._miss(public, "no image for that source/key")
+
+    # -- verbs -----------------------------------------------------------------------------------
     def do_HEAD(self) -> None:
         self.do_GET()
 
     def do_GET(self) -> None:
-        u = urllib.parse.urlsplit(self.path)
-        parts = [p for p in u.path.split("/") if p]
+        self._decision, self._bytes, self._status = "-", 0, "-"
+        try:
+            u = urllib.parse.urlsplit(self.path)
+            parts = [p for p in u.path.split("/") if p]
+            if self.server.door == "public":
+                self._public(u, parts)
+            else:
+                self._decision = "internal"
+                self._internal(u, parts)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True         # the client hung up; nothing left to answer
+            self._decision += ":aborted"
+        finally:
+            self._access()
 
+    def _public(self, u, parts) -> None:
+        if parts == ["healthz"]:
+            self._decision = "health"
+            body = json.dumps({"ok": os.path.isdir(ROOT)}).encode()
+            return self._send(200, body, "application/json", {"Cache-Control": "no-store"})
+        observe = self.server.public_mode == "observe"
+        if len(parts) == 3 and parts[0] == "img":
+            source, key = parts[1], parts[2]
+            ok, why = public_decision(source, key, self.server.allow)
+            if ok:
+                self._decision = "allow:" + why
+                return self._serve_img(source, key, public=True)
+            if observe:
+                self._decision = "would_deny:" + why
+                return self._serve_img(source, key, public=False)
+            self._decision = "deny:" + why
+            return self._not_found()
+        if observe:
+            self._decision = "would_deny:route"
+            return self._internal(u, parts)
+        self._decision = "deny:route"
+        return self._not_found()
+
+    def _internal(self, u, parts) -> None:
         if not parts:
             return self._send(200, USAGE.encode(), "text/plain; charset=utf-8")
 
         if parts == ["healthz"]:
+            st = os.statvfs(ROOT) if os.path.isdir(ROOT) else None
             body = json.dumps({
                 "ok": os.path.isdir(ROOT),
                 "root": ROOT,
                 "images": counts(),
-                "disk_free_gb": round(os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize / 1e9, 1),
+                "disk_free_gb": round(st.f_bavail * st.f_frsize / 1e9, 1) if st else None,
                 "card_map": {"cards": len(_SLUG_MAP["map"]) if _SLUG_MAP["map"] is not None else None,
                              "loaded": _SLUG_MAP["map"] is not None, "path": _SLUG_MAP["path"],
                              "error": _SLUG_MAP["error"]},
@@ -448,6 +1065,9 @@ class Handler(BaseHTTPRequestHandler):
                           "used_gb": round(_CSTATS["bytes"] / 1e9, 2), "writable": _CSTATS["writable"],
                           "hit": _CSTATS["hit"], "miss": _CSTATS["miss"],
                           "written": _CSTATS["write"], "evicted": _CSTATS["evicted"]},
+                "public": {"mode": self.server.public_mode, "whole_sources": list(PUBLIC_WHOLE_SOURCES),
+                           "no_list_open_sources": list(NO_LIST_OPEN_SOURCES),
+                           "allowlist": self.server.allow.status},
             }, indent=1).encode()
             return self._send(200, body, "application/json", {"Cache-Control": "no-store"})
 
@@ -469,62 +1089,125 @@ class Handler(BaseHTTPRequestHandler):
             key = card_image_key(parts[1], parts[2])
             if not key:
                 return self._send(404, b"no reference image for that card slug\n", "text/plain; charset=utf-8")
-            hit = cached_file("scp_catalog", key)
-            if hit:
-                _CSTATS["hit"] += 1
-                return self._send_file(hit)
-            p = image_path("scp_catalog", key)
-            if p:
-                _CSTATS["miss"] += 1
-                return self._send_file(p, cache_to=cache_base("scp_catalog", key) + os.path.splitext(p)[1].lower())
-            return self._send(404, b"card known but its image is not in the archive\n", "text/plain; charset=utf-8")
+            return self._serve_img("scp_catalog", key, public=False)
 
         if parts[0] == "img" and len(parts) == 3:
-            source, key = parts[1], parts[2]
-            hit = cached_file(source, key) if (source in SOURCES and KEY_RE.match(key or "")) else None
-            if hit:
-                _CSTATS["hit"] += 1
-                return self._send_file(hit)                 # SSD; already the fast copy
-            p = image_path(source, key)
-            if p:
-                _CSTATS["miss"] += 1
-                ext = os.path.splitext(p)[1].lower()
-                return self._send_file(p, cache_to=cache_base(source, key) + ext)
-            return self._send(404, b"no image for that source/key\n", "text/plain; charset=utf-8")
+            return self._serve_img(parts[1], parts[2], public=False)
 
         self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:
-        self._send(405, b"read-only\n", "text/plain; charset=utf-8", {"Allow": "GET, HEAD"})
+        self._decision, self._bytes, self._status = "write_verb", 0, "-"
+        self.close_connection = True     # never read a request body: drop the connection instead
+        try:
+            self._send(405, b"read-only\n", "text/plain; charset=utf-8", {"Allow": "GET, HEAD"})
+        finally:
+            self._access()
 
     do_PUT = do_DELETE = do_PATCH = do_POST
 
-    def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("%s %s\n" % (self.log_date_time_string(), fmt % args))
+
+# ---------------------------------------------------------------------------------------------
+# STARTUP
+def _serve_in_thread(srv: DoorServer, name: str) -> threading.Thread:
+    t = threading.Thread(target=srv.serve_forever, name=name, daemon=True)
+    t.start()
+    return t
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=int(os.environ.get("MAZI_IMAGE_SERVER_PORT", 8510)))
-    ap.add_argument("--host", default=os.environ.get("MAZI_IMAGE_SERVER_HOST", "0.0.0.0"))
-    a = ap.parse_args()
+def _internal_door_keeper(specs: list, allow: AllowList, nets, public_mode: str, retry_s: float = 30.0) -> None:
+    """Bind every internal address, retrying the ones that fail (e.g. Tailscale not up yet at boot).
+    The public door never waits on this."""
+    bound: dict = {}
+    warned: set = set()
+    while True:
+        want = []
+        for host, port in specs:
+            if host == "tailnet":
+                addrs = tailnet_addresses()
+                if not addrs and ("tailnet", port) not in warned:
+                    warned.add(("tailnet", port))
+                    sys.stderr.write("internal door: no tailnet address on any interface yet; retrying every "
+                                     f"{retry_s:.0f}s\n")
+                want += [(a, port) for a in addrs]
+            else:
+                want.append((host, port))
+        for addr in want:
+            if addr in bound:
+                continue
+            try:
+                srv = DoorServer(addr, Handler, door="internal", allow=allow, public_mode=public_mode,
+                                 allowed_nets=nets)
+            except OSError as e:
+                if addr not in warned:
+                    warned.add(addr)
+                    sys.stderr.write(f"internal door: cannot bind {fmt_addr(*addr)} ({e}); retrying\n")
+                continue
+            bound[addr] = srv
+            _serve_in_thread(srv, f"internal-{fmt_addr(*addr)}")
+            sys.stderr.write(f"INTERNAL door (full archive) on {fmt_addr(*addr)}  peers allowed: "
+                             f"{', '.join(str(n) for n in nets) or 'NONE'}\n")
+        time.sleep(retry_s)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="comp image server (public allow-list door + internal door)")
+    ap.add_argument("--public-bind", default=os.environ.get("MAZI_IMAGE_PUBLIC_BIND", DEFAULT_PUBLIC_BIND),
+                    help="HOST:PORT for the public (Serve/Funnel) door; default %(default)s")
+    ap.add_argument("--internal-bind", default=os.environ.get("MAZI_IMAGE_INTERNAL_BIND", DEFAULT_INTERNAL_BIND),
+                    help="tailnet:PORT | HOST:PORT[,...] | off; default %(default)s")
+    ap.add_argument("--internal-allow", default=os.environ.get("MAZI_IMAGE_INTERNAL_ALLOW", DEFAULT_INTERNAL_ALLOW),
+                    help="CIDRs whose TCP source address may use the internal door; default %(default)s")
+    ap.add_argument("--allowlist", default=ALLOWLIST_PATH)
+    ap.add_argument("--staged", default=STAGED_PATH, help="optional staged keys file ('' to disable)")
+    ap.add_argument("--public-mode", choices=("enforce", "observe"),
+                    default=os.environ.get("MAZI_IMAGE_PUBLIC_MODE", "enforce"))
+    ap.add_argument("--access-log", default=os.environ.get("MAZI_IMAGE_ACCESS_LOG", ACCESS_LOG_DEFAULT),
+                    help="rotating request log path, or '-' for stderr")
+    # legacy flags (pre-2026-10-01 single listener): they now set the PUBLIC door
+    ap.add_argument("--host", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
+    a = ap.parse_args(argv)
+
     if not os.path.isdir(ROOT):
         sys.stderr.write(f"image root not readable: {ROOT}\n"
                          "(on this Mini that usually means TCC -- run from the supervisor/ssh, "
                          "not a LaunchAgent)\n")
         return 2
-    srv = ThreadingHTTPServer((a.host, a.port), Handler)
-    srv.daemon_threads = True
+    pub = parse_bind(a.public_bind)
+    if len(pub) != 1 or pub[0][0] == "tailnet":
+        sys.stderr.write("--public-bind must be exactly one HOST:PORT\n")
+        return 2
+    pub_host, pub_port = pub[0]
+    if a.host:
+        pub_host = a.host
+    if a.port:
+        pub_port = a.port
+    internal_specs = parse_bind(a.internal_bind)
+    nets = parse_nets(a.internal_allow)
+    configure_access_log(a.access_log)
+
+    allow = AllowList(a.allowlist, a.staged or None)
+    allow.maybe_reload()                 # synchronous: the first request already sees the list
+
+    srv = DoorServer((pub_host, pub_port), Handler, door="public", allow=allow, public_mode=a.public_mode)
     # Warm the counts cache off-thread. Cold it is a ~26 s ledger read, and the first person to hit
     # /healthz should not conclude the server is hung. Images never wait on this.
     _load_cache_from_disk()          # instant if a previous run left counts behind
     threading.Thread(target=counts, daemon=True).start()
     threading.Thread(target=_load_slug_map, daemon=True).start()   # ~3s; /card/ answers 503 until done
+    threading.Thread(target=allow.poll_forever, daemon=True, name="allowlist-poll").start()
     if CACHE_ENABLED:
         _cache_sweep()                                                  # set `writable` before serving
         threading.Thread(target=_cache_sweeper, daemon=True).start()
         sys.stderr.write(f"ssd cache {CACHE_DIR} max={CACHE_MAX_GB}GB writable={_CSTATS['writable']}\n")
-    sys.stderr.write(f"comp image server on http://{a.host}:{a.port}  root={ROOT}\n")
+    if internal_specs:
+        threading.Thread(target=_internal_door_keeper, args=(internal_specs, allow, nets, a.public_mode),
+                         daemon=True, name="internal-door").start()
+    else:
+        sys.stderr.write("internal door: off\n")
+    sys.stderr.write(f"PUBLIC door ({a.public_mode}) on http://{fmt_addr(pub_host, pub_port)}  root={ROOT}  "
+                     f"allowlist={a.allowlist}  access_log={a.access_log}\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
