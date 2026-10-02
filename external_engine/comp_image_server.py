@@ -27,41 +27,62 @@ site only ever shows ~398K of those pictures. So the server now has two doors in
                                                  references, built by tools/build_image_allowlist.py,
                                                  plus an operator "staged" file), or the source is a
                                                  curated lot-photo source (lotphoto_goldin,
-                                                 lotphoto_fanatics -- the whole folder; removing the
-                                                 file is the takedown, and the catalog-art apply
-                                                 verifies the served sha256 BEFORE the beta row
-                                                 exists, so they must be reachable first).
+                                                 lotphoto_fanatics -- the whole folder, ~198 files; the
+                                                 catalog-art apply verifies the served sha256 BEFORE the
+                                                 beta row exists, so they must be reachable first).
                    GET/HEAD /healthz             {"ok": true|false} and nothing else.
                  Everything else -- unlisted keys, the bulk ebay/fanatics/tcgplayer archives, /card/,
                  /r, the usage page -- gets ONE identical 404 (same status, body and headers as a
                  real miss), decided in memory BEFORE any disk access. So the public side can't be
                  used to learn which keys exist, and random keys no longer cost 6TB seeks.
+                 Lot photos are NEVER served from or copied to the SSD cache (UNCACHED_SOURCES), on
+                 either door, and get a 1 h Cache-Control instead of "immutable": deleting the 6TB
+                 file takes a lot photo down at once, and a lot photo re-fetched under the same key
+                 is served (and sha256-checked) from the new file, never from a stale copy.
 
   INTERNAL door  <tailnet IP>:8512 (default "tailnet:8512": the Mini's own 100.64/10 and
                  fd7a:115c:a1e0::/48 addresses, read from ifconfig). The full, previous behaviour:
                  every source, /card/, /r, usage, the full /healthz JSON. It is NEVER behind
-                 Serve/Funnel; tailnet devices reach it at http://stavross-mac-mini.tail9fccf8.ts.net:8512
-                 (MagicDNS + WireGuard). A connection is refused unless its SOURCE ADDRESS is in the
-                 internal allow (default: the tailnet ranges only). Loopback is NOT allowed by default:
-                 Serve/Funnel traffic arrives from 127.0.0.1, so if anyone ever pointed Serve at this
-                 port by mistake, the archive still would not go public.
+                 Serve/Funnel; OTHER tailnet devices reach it at
+                 http://stavross-mac-mini.tail9fccf8.ts.net:8512 (MagicDNS + WireGuard). A connection is
+                 refused unless its SOURCE ADDRESS is in the internal allow (default: the tailnet ranges
+                 only) AND is not one of this machine's own addresses. Both halves matter: Serve/Funnel
+                 (and anything else running on the Mini) connects from 127.0.0.1 when its target is
+                 localhost, but from the Mini's OWN tailnet address when its target is
+                 http://<tailnet-ip>:8512 or http://<hostname>:8512. Refusing the Mini's own addresses
+                 (re-read from ifconfig every 30 s, plus every address the door binds) means a Serve or
+                 Funnel pointed at this port by mistake -- by any of those targets -- still cannot
+                 publish the archive. Tools on the Mini itself read the files directly instead.
+                 (Loopback is only ever allowed if --internal-allow names a loopback range: tests.)
 
 Access is decided by which socket a connection arrived on plus its TCP source address -- never by a
 request header. Tailscale's identity headers (Tailscale-User-Login, Tailscale-Funnel-Request) are
 only LOGGED as present/absent, because it has not been verified on this box that tailscaled strips
 client-sent copies. A spoofed header changes nothing.
 
-ALLOW-LIST FILE (see tools/build_image_allowlist.py)
+ALLOW-LIST FILES (see tools/build_image_allowlist.py and docs/IMAGE_SERVER_RUNBOOK.md)
   ~/mazi_local_evidence/image_allowlist/public_allowlist.txt   (MAZI_IMAGE_ALLOWLIST)
       "# mazi-image-allowlist v1" / "<source>/<key>" lines / "# end count=N". Loaded at start,
       re-read when it changes (polled), and a file that fails to parse is IGNORED: the last good
-      list stays in force. If no list has EVER loaded, the public door fails CLOSED for the bulk
-      sources (ebay, fanatics, tcgplayer_catalog) but keeps serving scp_catalog and the lot photos,
-      so the site does not go blank; it says so in the log.
+      list stays in force.
+  ~/mazi_local_evidence/image_allowlist/public_allowlist.last_good.txt
+      written by THIS server after every successful load (byte copy of what it parsed). The
+      supervisor restarts this process often; if public_allowlist.txt is missing or does not parse
+      at a restart, the server loads this copy instead and says so loudly (FALLBACK) in the log.
+      Only if neither loads does the public door fail CLOSED for the bulk sources (ebay, fanatics,
+      tcgplayer_catalog); scp_catalog and the lot photos stay up so the site does not go blank.
   ~/mazi_local_evidence/image_allowlist/staged.txt             (MAZI_IMAGE_ALLOWLIST_STAGED)
       optional, hand-edited: "<source>/<key>" or full ".../img/<source>/<key>" URLs, one per line.
       For keys about to be published (e.g. the VeeFriends apply HEADs the public URL BEFORE it
-      writes the beta row). Deleting the file un-stages everything.
+      writes the beta row). Staged keys do NOT expire: a staged key stays public until it is
+      removed from this file, even if its beta row is withdrawn. The builder reports staged keys
+      that are already listed (safe to drop; --prune-staged drops them) and those that are not in
+      the beta. Deleting the file un-stages everything. A staged file that does not parse keeps the
+      last good staged set, also across restarts (staged.last_good.txt).
+  ~/mazi_local_evidence/image_allowlist/mode                   (MAZI_IMAGE_PUBLIC_MODE_FILE)
+      optional: one word, "enforce" or "observe". Polled with the lists, so the public door can be
+      switched without restarting anything (the supervisor starts this server with no arguments).
+      No file = the --public-mode default (enforce). Anything else in the file = enforce, logged.
 
 Endpoints (GET/HEAD only -- there is no write path; write verbs get 405 on both doors):
   /                      usage                                         (internal)
@@ -74,9 +95,14 @@ Serving:
   /usr/bin/python3 external_engine/comp_image_server.py
       [--public-bind 127.0.0.1:8510] [--internal-bind tailnet:8512|off|HOST:PORT[,..]]
       [--internal-allow 100.64.0.0/10,fd7a:115c:a1e0::/48] [--allowlist PATH] [--staged PATH]
-      [--public-mode enforce|observe] [--access-log PATH|-]
-  --public-mode observe serves the public door like the internal one but logs what enforce WOULD
-  have denied (decision=would_deny:...). Enforce is the default.
+      [--public-mode enforce|observe] [--mode-file PATH|''] [--access-log PATH|-]
+  observe serves the public door like the internal one but logs what enforce WOULD have denied
+  (decision=would_deny:...). Enforce is the default; the mode file overrides it while it exists.
+
+TAKEDOWN (full runbook: docs/IMAGE_SERVER_RUNBOOK.md): remove the picture from the beta, rebuild the
+list (the builder refuses a big shrink without --allow-shrink), remove the key from staged.txt if it
+is there, and for a lot photo delete its 6TB folder (lot photos are never cached, so that is
+immediate). Check the access log for "deny:unlisted" on the key.
 
 Logging: lifecycle and allow-list events go to stderr (the supervisor's comp_image_server.out).
 Requests go to a rotating access log (~/Library/Logs/mazi_external_comps/comp_image_access.log,
@@ -135,10 +161,17 @@ ALLOWLIST_MAGIC = "# mazi-image-allowlist v1"
 ALLOWLIST_DIR = os.path.expanduser("~/mazi_local_evidence/image_allowlist")
 ALLOWLIST_PATH = os.environ.get("MAZI_IMAGE_ALLOWLIST", os.path.join(ALLOWLIST_DIR, "public_allowlist.txt"))
 STAGED_PATH = os.environ.get("MAZI_IMAGE_ALLOWLIST_STAGED", os.path.join(ALLOWLIST_DIR, "staged.txt"))
+MODE_PATH = os.environ.get("MAZI_IMAGE_PUBLIC_MODE_FILE", os.path.join(ALLOWLIST_DIR, "mode"))
 ALLOWLIST_POLL_S = float(os.environ.get("MAZI_IMAGE_ALLOWLIST_POLL_S", "30"))
 ALLOWLIST_MAX_BYTES = 256 * 1024 * 1024
+PUBLIC_MODES = ("enforce", "observe")
 # curated, small, reviewed one by one: the whole folder is public (see module docstring)
 PUBLIC_WHOLE_SOURCES = ("lotphoto_goldin", "lotphoto_fanatics")
+# never read from or written to the SSD cache, on either door: a whole-folder-public source is taken down by
+# deleting its 6TB file, and a cached copy would outlive that (and would be what a re-fetch's sha256 check saw)
+UNCACHED_SOURCES = PUBLIC_WHOLE_SOURCES
+UNCACHED_CACHE_CONTROL = "public, max-age=3600"     # can be taken down / re-fetched under the same key
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 # if NO list has ever loaded: these stay public so the site does not go blank; everything else 404s
 NO_LIST_OPEN_SOURCES = ("scp_catalog",)
 _END_RE = re.compile(r"^# end count=(\d+)$")
@@ -250,10 +283,21 @@ def _check_size(path: str) -> None:
         raise AllowListError(f"file larger than {ALLOWLIST_MAX_BYTES} bytes")
 
 
+def _read_bytes(path: str) -> tuple[bytes, tuple]:
+    """-> (content, sig). The sig comes from the SAME open file descriptor the bytes were read from, so it
+    always describes exactly what was parsed (the builder may replace the file between a stat and an open)."""
+    with open(path, "rb") as f:
+        st = os.fstat(f.fileno())
+        if st.st_size > ALLOWLIST_MAX_BYTES:
+            raise AllowListError(f"file larger than {ALLOWLIST_MAX_BYTES} bytes")
+        data = f.read(ALLOWLIST_MAX_BYTES + 1)
+    if len(data) > ALLOWLIST_MAX_BYTES:
+        raise AllowListError(f"file larger than {ALLOWLIST_MAX_BYTES} bytes")
+    return data, (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def _read_text(path: str) -> str:
-    _check_size(path)
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+    return _read_bytes(path)[0].decode("utf-8")
 
 
 def load_allowlist_file(path: str) -> tuple[dict, dict]:
@@ -262,24 +306,56 @@ def load_allowlist_file(path: str) -> tuple[dict, dict]:
         return parse_allowlist(f)
 
 
+def last_good_path_for(path: str) -> str:
+    """public_allowlist.txt -> public_allowlist.last_good.txt (staged.txt -> staged.last_good.txt)."""
+    root, ext = os.path.splitext(path)
+    return f"{root}.last_good{ext or '.txt'}"
+
+
+def _write_atomic_bytes(path: str, data: bytes) -> None:
+    d = os.path.dirname(path) or "."
+    tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 class AllowList:
     """The public allow-list plus the staged file, reloaded when either changes on disk.
 
     Readers take one reference to the current dict and never see a half-built one (the swap is a
-    single attribute assignment). A reload that fails leaves the previous list in force."""
+    single attribute assignment). A reload that fails leaves the previous list in force -- in memory
+    while this process lives, and across restarts through the *.last_good.txt copies written after
+    every successful load."""
 
     def __init__(self, path: str = ALLOWLIST_PATH, staged_path: str | None = STAGED_PATH,
-                 log=None) -> None:
+                 log=None, last_good_path: str | None = "", staged_last_good_path: str | None = "") -> None:
+        # last_good_path: "" = derive from path (public_allowlist.last_good.txt); None = no on-disk copy
         self.path, self.staged_path = path, staged_path
+        self.last_good_path = last_good_path_for(path) if last_good_path == "" else last_good_path
+        self.staged_last_good_path = (last_good_path_for(staged_path) if staged_last_good_path == "" and staged_path
+                                      else (staged_last_good_path or None))
         self._main: dict | None = None          # None = never loaded
         self._staged: dict = {}
-        self._sig_main = self._sig_staged = None
+        self._sig_main = None
+        self._sig_staged = "init"                # first reload always looks at the staged file
+        self._sha_last_good = self._sha_staged_last_good = None
         self._log = log or (lambda msg: sys.stderr.write(msg + "\n"))
         self._lock = threading.Lock()
         self.status: dict = {"loaded": False, "path": path, "staged_path": staged_path,
                              "counts": None, "total": 0, "meta": {}, "loaded_at": None,
+                             "loaded_from": None, "last_good_path": self.last_good_path,
                              "last_error": None, "last_error_at": None, "staged_total": 0,
-                             "staged_error": None}
+                             "staged_error": None, "staged_loaded_from": None}
 
     # -- queries ---------------------------------------------------------------------------------
     def loaded(self) -> bool:
@@ -311,22 +387,78 @@ class AllowList:
         if sig == self._sig_main:
             return
         try:
-            sets, meta = load_allowlist_file(self.path)
+            data, sig = _read_bytes(self.path)
+            sets, meta = parse_allowlist(data.decode("utf-8"))
         except (OSError, UnicodeDecodeError, AllowListError) as e:
             self._sig_main = sig                 # do not re-parse the same bad file every poll
             keep = (f"keeping the last good list ({self.status['total']:,} keys, built_at="
                     f"{self.status['meta'].get('built_at', '?')})" if self._main is not None else
-                    "no list has ever loaded")
+                    "no list loaded yet in this process")
             self._fail(f"allow-list reload FAILED ({type(e).__name__}: {e}); {keep}")
             return
-        self._main, self._sig_main = sets, sig
+        was_fallback = self.status["loaded_from"] == "last_good"
+        self._sig_main = sig
+        self._install(sets, meta, "main", self.path)
+        if was_fallback:
+            self._log(f"allow-list FALLBACK OVER: {self.path} loads again")
+        # only now, with the bytes proven good, does this become the copy a restart falls back to
+        self._sha_last_good = self._save_copy(self.last_good_path, data, self._sha_last_good)
+
+    def _install(self, sets: dict, meta: dict, loaded_from: str, path: str) -> None:
+        self._main = sets
         counts = {s: len(v) for s, v in sets.items() if v}
         total = sum(counts.values())
-        self.status.update(loaded=True, counts=counts, total=total, meta=meta,
-                           loaded_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), last_error=None)
+        self.status.update(loaded=True, counts=counts, total=total, meta=meta, loaded_from=loaded_from,
+                           loaded_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        if loaded_from == "main":
+            self.status["last_error"] = None
         self._log(f"public allow-list loaded: {total:,} keys "
                   f"({', '.join(f'{s} {n:,}' for s, n in counts.items())}) built_at={meta.get('built_at', '?')} "
-                  f"from {self.path}")
+                  f"from {path}")
+
+    def _load_last_good(self) -> bool:
+        """Only used while no list is in memory (i.e. right after a restart): the on-disk copy of the last list
+        this server accepted."""
+        p = self.last_good_path
+        if not p:
+            return False
+        try:
+            data, _ = _read_bytes(p)
+            sets, meta = parse_allowlist(data.decode("utf-8"))
+        except FileNotFoundError:
+            self._log(f"no last-good allow-list copy at {p}")
+            return False
+        except (OSError, UnicodeDecodeError, AllowListError) as e:
+            self._log(f"last-good allow-list copy {p} is unusable too ({type(e).__name__}: {e})")
+            return False
+        self._install(sets, meta, "last_good", p)
+        self._sha_last_good = hashlib.sha256(data).hexdigest()
+        self._log(f"!!! PUBLIC ALLOW-LIST FALLBACK: {self.path} is missing or bad, so the public door is serving "
+                  f"the LAST GOOD copy {p} (built_at={meta.get('built_at', '?')}). Fix or rebuild "
+                  f"{os.path.basename(self.path)}; the server switches back as soon as it loads.")
+        return True
+
+    def _save_copy(self, path: str | None, data: bytes, known_sha: str | None) -> str | None:
+        """Atomically write data to path unless it already holds exactly that. Best effort: a failure here never
+        touches the in-memory list. -> the sha256 now on disk (or known_sha if the write failed)."""
+        if not path:
+            return known_sha
+        h = hashlib.sha256(data).hexdigest()
+        if h == known_sha:
+            return h
+        try:
+            old, _ = _read_bytes(path)
+            if hashlib.sha256(old).hexdigest() == h:
+                return h
+        except (OSError, AllowListError):
+            pass
+        try:
+            _write_atomic_bytes(path, data)
+            return h
+        except OSError as e:
+            self._log(f"could not write the last-good copy {path} ({type(e).__name__}: {e}); the list in memory "
+                      "is unaffected, but a restart could not fall back to it")
+            return known_sha
 
     def _reload_staged(self) -> None:
         if not self.staged_path:
@@ -338,36 +470,118 @@ class AllowList:
             if self._staged:
                 self._log(f"staged allow-list removed: {self.staged_path}; 0 staged keys")
             self._staged, self._sig_staged = {}, None
-            self.status.update(staged_total=0, staged_error=None)
+            self.status.update(staged_total=0, staged_error=None, staged_loaded_from=None)
+            # deleting staged.txt un-stages everything, and that has to survive a restart too
+            p = self.staged_last_good_path
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError as e:
+                    self._log(f"could not remove {p} ({e}); a later bad staged.txt could fall back to it")
+            self._sha_staged_last_good = None
             return
         try:
-            staged = parse_staged(_read_text(self.staged_path))
+            data, sig = _read_bytes(self.staged_path)
+            staged = parse_staged(data.decode("utf-8"))
         except (OSError, UnicodeDecodeError, AllowListError) as e:
             self._sig_staged = sig
             self.status["staged_error"] = f"{type(e).__name__}: {e}"
-            self._log(f"staged allow-list reload FAILED ({type(e).__name__}: {e}); keeping the last good "
-                      f"staged list ({self.status['staged_total']:,} keys)")
+            self._log(f"staged allow-list reload FAILED ({type(e).__name__}: {e})")
+            if self.status["staged_loaded_from"] is None and self._load_staged_last_good():
+                return
+            self._log(f"keeping the last good staged list ({self.status['staged_total']:,} keys)")
             return
         self._staged, self._sig_staged = staged, sig
         total = sum(len(v) for v in staged.values())
-        self.status.update(staged_total=total, staged_error=None)
+        self.status.update(staged_total=total, staged_error=None, staged_loaded_from="staged")
         self._log(f"staged allow-list loaded: {total:,} keys from {self.staged_path}")
+        self._sha_staged_last_good = self._save_copy(self.staged_last_good_path, data, self._sha_staged_last_good)
+
+    def _load_staged_last_good(self) -> bool:
+        p = self.staged_last_good_path
+        if not p:
+            return False
+        try:
+            data, _ = _read_bytes(p)
+            staged = parse_staged(data.decode("utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, UnicodeDecodeError, AllowListError) as e:
+            self._log(f"last-good staged copy {p} is unusable too ({type(e).__name__}: {e})")
+            return False
+        self._staged = staged
+        self._sha_staged_last_good = hashlib.sha256(data).hexdigest()
+        total = sum(len(v) for v in staged.values())
+        self.status.update(staged_total=total, staged_loaded_from="last_good")
+        self._log(f"!!! STAGED FALLBACK: {self.staged_path} does not parse; serving the last good staged copy {p} "
+                  f"({total:,} keys) until it is fixed")
+        return True
 
     def _fail(self, msg: str) -> None:
         self.status.update(last_error=msg, last_error_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         self._log(msg)
-        if self._main is None:
+        if self._main is None and not self._load_last_good():
             self._log("PUBLIC DOOR FAILING CLOSED for ebay, fanatics, tcgplayer_catalog (404 for every key) "
                       "until an allow-list loads; scp_catalog and lot photos stay public so the site does "
                       "not go blank")
 
     def poll_forever(self, every_s: float = ALLOWLIST_POLL_S) -> None:
-        while True:
-            time.sleep(every_s)
+        poll_forever([self], every_s, self._log)
+
+
+class PublicMode:
+    """enforce | observe for the public door. The --public-mode default, overridden while the mode file exists, so
+    observe can be switched on and off without restarting the server (the supervisor starts it with no arguments).
+    A mode file that cannot be read or holds anything else means ENFORCE (fail closed), logged loudly."""
+
+    def __init__(self, default: str = "enforce", path: str | None = MODE_PATH, log=None) -> None:
+        if default not in PUBLIC_MODES:
+            raise ValueError(f"public mode must be one of {PUBLIC_MODES}, not {default!r}")
+        self.default, self.path = default, (path or None)
+        self._mode, self.source = default, "default"
+        self._sig = "init"
+        self._log = log or (lambda msg: sys.stderr.write(msg + "\n"))
+        self._lock = threading.Lock()
+
+    def current(self) -> str:
+        return self._mode
+
+    def maybe_reload(self) -> None:
+        if not self.path:
+            return
+        with self._lock:
+            sig = _file_sig(self.path)
+            if sig == self._sig:
+                return
+            self._sig = sig
+            if sig is None:
+                new, source, why = self.default, "default", f"no mode file at {self.path}; --public-mode default"
+            else:
+                try:
+                    with open(self.path, "rb") as f:
+                        word = f.read(64).decode("utf-8").strip().lower()
+                except (OSError, UnicodeDecodeError) as e:
+                    word = f"<unreadable: {type(e).__name__}>"
+                if word in PUBLIC_MODES:
+                    new, source, why = word, "file", f"from {self.path}"
+                else:
+                    new, source = "enforce", "file_invalid"
+                    why = (f"!!! {self.path} holds {word[:20]!r}, not one of {'/'.join(PUBLIC_MODES)}: "
+                           "ENFORCING (fail closed)")
+            self._mode, self.source = new, source
+            self._log(f"PUBLIC door mode: {new} ({why})")
+
+
+def poll_forever(objs, every_s: float = ALLOWLIST_POLL_S, log=None) -> None:
+    """Re-check each object's files every every_s seconds. Never dies."""
+    log = log or (lambda msg: sys.stderr.write(msg + "\n"))
+    while True:
+        time.sleep(every_s)
+        for o in objs:
             try:
-                self.maybe_reload()
+                o.maybe_reload()
             except Exception as e:  # noqa: BLE001 -- the poller must never die
-                self._log(f"allow-list poller error: {type(e).__name__}: {e}")
+                log(f"allow-list/mode poller error: {type(e).__name__}: {e}")
 
 
 def public_decision(source: str, key: str, allow: AllowList) -> tuple[bool, str]:
@@ -426,8 +640,9 @@ def peer_class(host: str) -> str:
     return "other"
 
 
-def tailnet_addresses() -> list:
-    """This machine's tailnet addresses, read from ifconfig (Tailscale puts them on a utun)."""
+def local_addresses() -> list:
+    """Every address on every interface of this machine (normalised strings), read from ifconfig. Tailscale
+    puts the tailnet ones on a utun. [] if ifconfig cannot be run."""
     try:
         out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
@@ -435,10 +650,34 @@ def tailnet_addresses() -> list:
     found = []
     for m in re.finditer(r"\binet6?\s+([0-9A-Fa-f:.%a-z0-9]+)", out):
         ip = _ip(m.group(1))
-        if ip is not None and any(ip.version == n.version and ip in n for n in TAILNET_NETS):
-            if str(ip) not in found:
-                found.append(str(ip))
+        if ip is not None and str(ip) not in found:
+            found.append(str(ip))
     return found
+
+
+def is_tailnet(addr: str) -> bool:
+    ip = _ip(addr)
+    return ip is not None and any(ip.version == n.version and ip in n for n in TAILNET_NETS)
+
+
+def tailnet_addresses(addrs: list | None = None) -> list:
+    """This machine's tailnet addresses (from local_addresses(), or the list given)."""
+    return [a for a in (local_addresses() if addrs is None else addrs) if is_tailnet(a)]
+
+
+def norm_addrs(addrs) -> frozenset:
+    """Addresses as the internal door compares them: parsed, scope dropped, v4-mapped v6 folded to v4."""
+    out = set()
+    for a in addrs:
+        ip = _ip(str(a))
+        if ip is not None:
+            out.add(str(ip))
+    return frozenset(out)
+
+
+def nets_include_loopback(nets) -> bool:
+    return any(lo in n for n in nets for lo in (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1"))
+               if lo.version == n.version)
 
 
 def fmt_addr(host: str, port: int) -> str:
@@ -481,6 +720,21 @@ CACHE_MAX_GB = float(os.environ.get("MAZI_IMAGE_CACHE_MAX_GB", "20"))
 CACHE_ENABLED = CACHE_DIR.lower() not in ("", "off", "none", "0")
 CACHE_MIN_FREE_GB = 8.0   # never fill the boot volume; below this we serve but stop caching
 _CSTATS = {"hit": 0, "miss": 0, "write": 0, "evicted": 0, "bytes": 0, "writable": True}
+
+
+def paths_overlap(a: str, b: str) -> bool:
+    """True if one path is the other or lies inside it (after resolving symlinks)."""
+    ra, rb = os.path.realpath(a), os.path.realpath(b)
+    return ra == rb or ra.startswith(rb.rstrip(os.sep) + os.sep) or rb.startswith(ra.rstrip(os.sep) + os.sep)
+
+
+def cache_conflict() -> str | None:
+    """Why the SSD cache must stay OFF, or None. The sweep DELETES files under CACHE_DIR (eviction, abandoned .tmp
+    files, the lot-photo purge), so a CACHE_DIR that is, contains or sits inside the archive ROOT would delete
+    originals. Checked at startup (caching is switched off) and again before every sweep."""
+    if CACHE_ENABLED and paths_overlap(CACHE_DIR, ROOT):
+        return f"MAZI_IMAGE_CACHE_DIR {CACHE_DIR} overlaps the archive root {ROOT}"
+    return None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -555,8 +809,9 @@ def cache_base(source: str, key: str) -> str:
 
 
 def cached_file(source: str, key: str) -> str | None:
-    """Cache hit path. Four stats on an SSD is microseconds; it is never worth an index."""
-    if not CACHE_ENABLED or source not in SOURCES or not valid_key(key):
+    """Cache hit path. Four stats on an SSD is microseconds; it is never worth an index.
+    Never a hit for UNCACHED_SOURCES (lot photos): see the module docstring."""
+    if not CACHE_ENABLED or source not in SOURCES or source in UNCACHED_SOURCES or not valid_key(key):
         return None
     base = cache_base(source, key)
     for ext in EXTS:
@@ -572,8 +827,11 @@ def _cache_sweep() -> None:
     Walks only the cache (bounded, on SSD) -- never the archive. Deleting here can only ever cost a
     re-read from the 6TB, so this is deliberately blunt: on any error it gives up quietly rather
     than risking a half-applied policy."""
+    if not CACHE_ENABLED or cache_conflict():
+        return
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
+        _purge_uncached_copies()
         st = os.statvfs(CACHE_DIR)
         free_gb = st.f_bavail * st.f_frsize / 1e9
         _CSTATS["writable"] = free_gb > CACHE_MIN_FREE_GB
@@ -612,6 +870,32 @@ def _cache_sweep() -> None:
         _CSTATS["bytes"] = total
     except OSError:
         pass
+
+
+def _purge_uncached_copies() -> int:
+    """Remove SSD copies of UNCACHED_SOURCES left by servers from before 2026-10-02 (35 Goldin + 22 Fanatics
+    lot photos on the Mini that day). They are never read any more; removing them means a lot photo whose 6TB
+    file was deleted has no copy left anywhere on the box. Copies only: the 6TB originals are never touched
+    (refused outright if CACHE_DIR overlaps ROOT)."""
+    if not CACHE_ENABLED or cache_conflict():
+        return 0
+    n = 0
+    for s in UNCACHED_SOURCES:
+        d = os.path.join(CACHE_DIR, s)
+        if not os.path.isdir(d) or os.path.islink(d):
+            continue
+        for dirpath, _, names in os.walk(d):
+            for name in names:
+                try:
+                    os.unlink(os.path.join(dirpath, name))
+                    n += 1
+                except OSError:
+                    pass
+    if n:
+        _CSTATS["purged_uncached"] = _CSTATS.get("purged_uncached", 0) + n
+        sys.stderr.write(f"ssd cache: removed {n} cached cop{'y' if n == 1 else 'ies'} of "
+                         f"{'/'.join(UNCACHED_SOURCES)} (served from the 6TB only now)\n")
+    return n
 
 
 def _cache_sweeper() -> None:
@@ -836,17 +1120,27 @@ NOT_FOUND = (404, b"not found\n", "text/plain; charset=utf-8", {"Cache-Control":
 
 class DoorServer(ThreadingHTTPServer):
     """One listening socket = one door. door='public' serves the allow-list view; door='internal'
-    serves everything but only to peers whose source address is in allowed_nets."""
+    serves everything but only to peers whose source address is in allowed_nets and is not one of this
+    machine's own addresses (self_addrs; loopback is governed by allowed_nets alone)."""
     daemon_threads = True
 
-    def __init__(self, addr, handler, *, door: str, allow: AllowList, public_mode: str = "enforce",
-                 allowed_nets=()) -> None:
+    def __init__(self, addr, handler, *, door: str, allow: AllowList, public_mode="enforce",
+                 allowed_nets=(), self_addrs=()) -> None:
         if door not in ("public", "internal"):
             raise ValueError(door)
         self.address_family = socket.AF_INET6 if ":" in addr[0] else socket.AF_INET
-        self.door, self.allow, self.public_mode, self.allowed_nets = door, allow, public_mode, tuple(allowed_nets)
-        self.refused = 0
+        self.door, self.allow, self.allowed_nets = door, allow, tuple(allowed_nets)
+        # public_mode: "enforce" | "observe" (fixed), or a PublicMode that follows the mode file
+        self.mode = public_mode if isinstance(public_mode, PublicMode) else PublicMode(public_mode, path=None)
+        self.self_addrs = norm_addrs(self_addrs)
+        self.refused = self.refused_self = 0
         super().__init__(addr, handler)
+        # the address this door is bound to is always one of this machine's own (the keeper adds the rest)
+        self.self_addrs = norm_addrs(list(self.self_addrs) + [self.server_address[0]])
+
+    @property
+    def public_mode(self) -> str:
+        return self.mode.current()
 
     def server_bind(self) -> None:
         # HTTPServer.server_bind does a reverse-DNS getfqdn() we never use; skip it
@@ -866,6 +1160,16 @@ class DoorServer(ThreadingHTTPServer):
     def verify_request(self, request, client_address) -> bool:
         if self.door != "internal":
             return True
+        ip = _ip(client_address[0])
+        if ip is not None and not ip.is_loopback and str(ip) in self.self_addrs:
+            # A connection from this machine's own (tailnet) address: a Serve/Funnel or other local proxy pointed
+            # at http://<tailnet-ip or hostname>:8512 would arrive exactly like this. Never the internal door.
+            self.refused_self += 1
+            if self.refused_self <= 20 or self.refused_self % 1000 == 0:
+                sys.stderr.write("internal door refused a connection from one of THIS machine's own addresses "
+                                 "(a Serve/Funnel or local proxy pointed at the internal door?) "
+                                 f"(refused so far: {self.refused_self})\n")
+            return False
         if peer_allowed(client_address[0], self.allowed_nets):
             return True
         self.refused += 1
@@ -899,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
         h = self.headers
         _ACCESS.info(
             "%s %s %s %s %s %s %s peer=%s tsu=%d tsf=%d ua=%s ref=%s",
-            self._door_tag(), self.server.public_mode if self.server.door == "public" else "-",
+            self._door_tag(), getattr(self, "_mode", "-") if self.server.door == "public" else "-",
             self._decision, self.command, getattr(self, "_status", "-"), self._bytes,
             _safe_path(self.path), peer_class(self.client_address[0]),
             int(h is not None and "Tailscale-User-Login" in h), int(h is not None and "Tailscale-Funnel-Request" in h),
@@ -923,7 +1227,8 @@ class Handler(BaseHTTPRequestHandler):
         source and an unknown route, so the public side is not an existence oracle."""
         self._send(*NOT_FOUND)
 
-    def _send_file(self, path: str, public: bool, cache_to: str | None = None) -> None:
+    def _send_file(self, path: str, public: bool, cache_to: str | None = None,
+                   cache_control: str = IMMUTABLE_CACHE_CONTROL) -> None:
         """Stream the file; if cache_to is given, tee it to the SSD on the way past.
 
         Teeing rather than re-reading matters: the 6TB read is the expensive part, and we already
@@ -944,8 +1249,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", CTYPE.get(ext, "application/octet-stream"))
             self.send_header("Content-Length", str(size))
             self.send_header("Access-Control-Allow-Origin", "*")
-            # archived originals never change in place; a new photo gets a new key
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            # archived originals never change in place (a new photo gets a new key); lot photos can be taken
+            # down or re-fetched under the same key, so they get UNCACHED_CACHE_CONTROL
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             if self.command == "HEAD":
                 return
@@ -994,6 +1300,14 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_img(self, source: str, key: str, public: bool) -> None:
         if source not in SOURCES or not valid_key(key):
             return self._miss(public, "no image for that source/key")
+        if source in UNCACHED_SOURCES:
+            # the 6TB file is the only copy ever served: deleting it is the takedown, and a re-fetch under the same
+            # key is what the next request (and the catalog-art apply's sha256 check) sees
+            p = image_path(source, key)
+            if p:
+                _CSTATS["direct"] = _CSTATS.get("direct", 0) + 1
+                return self._send_file(p, public, cache_control=UNCACHED_CACHE_CONTROL)
+            return self._miss(public, "no image for that source/key")
         hit = cached_file(source, key)
         if hit:
             _CSTATS["hit"] += 1
@@ -1001,7 +1315,9 @@ class Handler(BaseHTTPRequestHandler):
         p = image_path(source, key)
         if p:
             _CSTATS["miss"] += 1
-            return self._send_file(p, public, cache_to=cache_base(source, key) + os.path.splitext(p)[1].lower())
+            # no tee when caching is off: cache_base() of an "off" CACHE_DIR is a RELATIVE path
+            cache_to = cache_base(source, key) + os.path.splitext(p)[1].lower() if CACHE_ENABLED else None
+            return self._send_file(p, public, cache_to=cache_to)
         return self._miss(public, "no image for that source/key")
 
     # -- verbs -----------------------------------------------------------------------------------
@@ -1010,6 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         self._decision, self._bytes, self._status = "-", 0, "-"
+        self._mode = self.server.public_mode     # read once: the mode file can flip it mid-request
         try:
             u = urllib.parse.urlsplit(self.path)
             parts = [p for p in u.path.split("/") if p]
@@ -1029,7 +1346,7 @@ class Handler(BaseHTTPRequestHandler):
             self._decision = "health"
             body = json.dumps({"ok": os.path.isdir(ROOT)}).encode()
             return self._send(200, body, "application/json", {"Cache-Control": "no-store"})
-        observe = self.server.public_mode == "observe"
+        observe = self._mode == "observe"
         if len(parts) == 3 and parts[0] == "img":
             source, key = parts[1], parts[2]
             ok, why = public_decision(source, key, self.server.allow)
@@ -1064,8 +1381,11 @@ class Handler(BaseHTTPRequestHandler):
                 "cache": {"enabled": CACHE_ENABLED, "dir": CACHE_DIR, "max_gb": CACHE_MAX_GB,
                           "used_gb": round(_CSTATS["bytes"] / 1e9, 2), "writable": _CSTATS["writable"],
                           "hit": _CSTATS["hit"], "miss": _CSTATS["miss"],
-                          "written": _CSTATS["write"], "evicted": _CSTATS["evicted"]},
-                "public": {"mode": self.server.public_mode, "whole_sources": list(PUBLIC_WHOLE_SOURCES),
+                          "written": _CSTATS["write"], "evicted": _CSTATS["evicted"],
+                          "uncached_sources": list(UNCACHED_SOURCES), "direct": _CSTATS.get("direct", 0),
+                          "purged_uncached": _CSTATS.get("purged_uncached", 0)},
+                "public": {"mode": self.server.public_mode, "mode_source": self.server.mode.source,
+                           "mode_file": self.server.mode.path, "whole_sources": list(PUBLIC_WHOLE_SOURCES),
                            "no_list_open_sources": list(NO_LIST_OPEN_SOURCES),
                            "allowlist": self.server.allow.status},
             }, indent=1).encode()
@@ -1098,6 +1418,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._decision, self._bytes, self._status = "write_verb", 0, "-"
+        self._mode = self.server.public_mode
         self.close_connection = True     # never read a request body: drop the connection instead
         try:
             self._send(405, b"read-only\n", "text/plain; charset=utf-8", {"Allow": "GET, HEAD"})
@@ -1115,16 +1436,19 @@ def _serve_in_thread(srv: DoorServer, name: str) -> threading.Thread:
     return t
 
 
-def _internal_door_keeper(specs: list, allow: AllowList, nets, public_mode: str, retry_s: float = 30.0) -> None:
-    """Bind every internal address, retrying the ones that fail (e.g. Tailscale not up yet at boot).
+def _internal_door_keeper(specs: list, allow: AllowList, nets, public_mode, retry_s: float = 30.0) -> None:
+    """Bind every internal address, retrying the ones that fail (e.g. Tailscale not up yet at boot), and keep
+    every internal door's list of this machine's own addresses current (re-read from ifconfig each pass, plus
+    every address the doors bind), so a connection from the Mini to itself is never let in.
     The public door never waits on this."""
     bound: dict = {}
     warned: set = set()
     while True:
+        local = local_addresses()
         want = []
         for host, port in specs:
             if host == "tailnet":
-                addrs = tailnet_addresses()
+                addrs = tailnet_addresses(local)
                 if not addrs and ("tailnet", port) not in warned:
                     warned.add(("tailnet", port))
                     sys.stderr.write("internal door: no tailnet address on any interface yet; retrying every "
@@ -1132,12 +1456,15 @@ def _internal_door_keeper(specs: list, allow: AllowList, nets, public_mode: str,
                 want += [(a, port) for a in addrs]
             else:
                 want.append((host, port))
+        own = norm_addrs(list(local) + [h for h, _ in want] + [h for h, _ in bound])
+        for srv in bound.values():
+            srv.self_addrs = own                 # one attribute swap; verify_request reads it once
         for addr in want:
             if addr in bound:
                 continue
             try:
                 srv = DoorServer(addr, Handler, door="internal", allow=allow, public_mode=public_mode,
-                                 allowed_nets=nets)
+                                 allowed_nets=nets, self_addrs=own)
             except OSError as e:
                 if addr not in warned:
                     warned.add(addr)
@@ -1146,7 +1473,8 @@ def _internal_door_keeper(specs: list, allow: AllowList, nets, public_mode: str,
             bound[addr] = srv
             _serve_in_thread(srv, f"internal-{fmt_addr(*addr)}")
             sys.stderr.write(f"INTERNAL door (full archive) on {fmt_addr(*addr)}  peers allowed: "
-                             f"{', '.join(str(n) for n in nets) or 'NONE'}\n")
+                             f"{', '.join(str(n) for n in nets) or 'NONE'}, minus this machine's own "
+                             f"{len(own)} addresses\n")
         time.sleep(retry_s)
 
 
@@ -1160,8 +1488,12 @@ def main(argv=None) -> int:
                     help="CIDRs whose TCP source address may use the internal door; default %(default)s")
     ap.add_argument("--allowlist", default=ALLOWLIST_PATH)
     ap.add_argument("--staged", default=STAGED_PATH, help="optional staged keys file ('' to disable)")
-    ap.add_argument("--public-mode", choices=("enforce", "observe"),
-                    default=os.environ.get("MAZI_IMAGE_PUBLIC_MODE", "enforce"))
+    ap.add_argument("--public-mode", choices=PUBLIC_MODES,
+                    default=os.environ.get("MAZI_IMAGE_PUBLIC_MODE", "enforce"),
+                    help="default mode of the public door when no mode file exists; default %(default)s")
+    ap.add_argument("--mode-file", default=MODE_PATH,
+                    help="file holding 'enforce' or 'observe', polled; overrides --public-mode while it exists "
+                         "('' to disable); default %(default)s")
     ap.add_argument("--access-log", default=os.environ.get("MAZI_IMAGE_ACCESS_LOG", ACCESS_LOG_DEFAULT),
                     help="rotating request log path, or '-' for stderr")
     # legacy flags (pre-2026-10-01 single listener): they now set the PUBLIC door
@@ -1185,29 +1517,45 @@ def main(argv=None) -> int:
         pub_port = a.port
     internal_specs = parse_bind(a.internal_bind)
     nets = parse_nets(a.internal_allow)
+    if internal_specs and nets_include_loopback(nets):
+        sys.stderr.write("!!! --internal-allow includes LOOPBACK: anything on this machine -- including a Serve/Funnel "
+                         "proxy pointed at the internal door -- can read the whole archive. Tests only.\n")
     configure_access_log(a.access_log)
+    global CACHE_ENABLED
+    why = cache_conflict()
+    if why:
+        CACHE_ENABLED = False
+        sys.stderr.write(f"!!! SSD cache DISABLED: {why} (the cache sweep deletes files; it must never touch "
+                         "the archive). Serving straight from the 6TB.\n")
+    try:
+        mode = PublicMode(a.public_mode, a.mode_file or None)
+    except ValueError as e:
+        sys.stderr.write(f"{e}\n")
+        return 2
+    mode.maybe_reload()                  # synchronous, like the list
 
     allow = AllowList(a.allowlist, a.staged or None)
     allow.maybe_reload()                 # synchronous: the first request already sees the list
 
-    srv = DoorServer((pub_host, pub_port), Handler, door="public", allow=allow, public_mode=a.public_mode)
+    srv = DoorServer((pub_host, pub_port), Handler, door="public", allow=allow, public_mode=mode)
     # Warm the counts cache off-thread. Cold it is a ~26 s ledger read, and the first person to hit
     # /healthz should not conclude the server is hung. Images never wait on this.
     _load_cache_from_disk()          # instant if a previous run left counts behind
     threading.Thread(target=counts, daemon=True).start()
     threading.Thread(target=_load_slug_map, daemon=True).start()   # ~3s; /card/ answers 503 until done
-    threading.Thread(target=allow.poll_forever, daemon=True, name="allowlist-poll").start()
+    threading.Thread(target=poll_forever, args=([allow, mode],), daemon=True, name="allowlist-poll").start()
     if CACHE_ENABLED:
         _cache_sweep()                                                  # set `writable` before serving
         threading.Thread(target=_cache_sweeper, daemon=True).start()
         sys.stderr.write(f"ssd cache {CACHE_DIR} max={CACHE_MAX_GB}GB writable={_CSTATS['writable']}\n")
     if internal_specs:
-        threading.Thread(target=_internal_door_keeper, args=(internal_specs, allow, nets, a.public_mode),
+        threading.Thread(target=_internal_door_keeper, args=(internal_specs, allow, nets, mode),
                          daemon=True, name="internal-door").start()
     else:
         sys.stderr.write("internal door: off\n")
-    sys.stderr.write(f"PUBLIC door ({a.public_mode}) on http://{fmt_addr(pub_host, pub_port)}  root={ROOT}  "
-                     f"allowlist={a.allowlist}  access_log={a.access_log}\n")
+    sys.stderr.write(f"PUBLIC door ({mode.current()}, {mode.source}) on http://{fmt_addr(pub_host, pub_port)}  "
+                     f"root={ROOT}  allowlist={a.allowlist}  mode_file={a.mode_file or 'off'}  "
+                     f"access_log={a.access_log}\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
