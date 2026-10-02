@@ -54,6 +54,23 @@ def auction_end(html):
     return "%s-%02d-%02d" % (m.group(3), int(m.group(1)), int(m.group(2))) if m else None
 
 
+def page_html(page, tries=4, pause=2.0):
+    """page.content(), retried while the page is still navigating: a late postback/redirect can outlast the fixed wait,
+    and Playwright then raises "Unable to retrieve content because the page is navigating" (it ended the 2026-10-01
+    Lelands leg 39 auctions in). Any other error, or the last try, is raised as before."""
+    for i in range(tries):
+        try:
+            return page.content()
+        except Exception as e:
+            if "navigating" not in str(e) or i == tries - 1:
+                raise
+            try:
+                page.wait_for_load_state("domcontentloaded")
+            except Exception:
+                pass
+            time.sleep(pause)
+
+
 def auctions(html):
     m = re.search(r'<select[^>]*id="Auction"[^>]*>(.*?)</select>', html or "", re.S)
     return [(v, re.sub(r"&amp;", "&", t).strip()) for v, t in re.findall(r'value="(\d+)"[^>]*>([^<]*)<', m.group(1))] if m else []
@@ -81,7 +98,7 @@ def main():
         page.set_default_timeout(90000)
         try:
             page.goto(h["host"] + "/Lots/Gallery?size=250", wait_until="domcontentloaded"); page.wait_for_timeout(4000)
-            todo = [x for x in auctions(page.content()) if x[0] not in state["done_auctions"]]
+            todo = [x for x in auctions(page_html(page)) if x[0] not in state["done_auctions"]]
             if a.limit_auctions:
                 todo = todo[:a.limit_auctions]
             print(f"[{a.house}] {len(todo)} auctions to read", flush=True)
@@ -91,7 +108,7 @@ def main():
                 page.goto(h["host"] + "/Lots/Gallery?size=250", wait_until="domcontentloaded"); page.wait_for_timeout(3000)
                 page.select_option("#Auction", aid)
                 page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(int(a.sleep * 1000) + 3000)
-                html = page.content()
+                html = page_html(page)
                 if "Attention Required" in html:
                     print("  Cloudflare challenge -- stopping (state saved)", flush=True); break
                 end = auction_end(html)
@@ -99,7 +116,7 @@ def main():
                 for pg in range(1, a.max_pages + 1):
                     if pg > 1:
                         page.goto(h["host"] + f"/Lots/Gallery?size=250&page={pg}", wait_until="domcontentloaded")
-                        page.wait_for_timeout(int(a.sleep * 1000)); html = page.content()
+                        page.wait_for_timeout(int(a.sleep * 1000)); html = page_html(page)
                     lots = parse_gallery(html)
                     if not lots or not any(l["sold_price"] for l in lots):
                         break

@@ -40,5 +40,37 @@ class Parse(unittest.TestCase):
         self.assertEqual([R.is_single_card(l["title"]) for l in lots], [True, False, True])
 
 
+class _NavPage:
+    """content() raises Playwright's navigating error `fails` times, then returns the html."""
+    def __init__(self, fails, msg="Page.content: Unable to retrieve content because the page is navigating and changing the content."):
+        self.fails, self.msg, self.calls, self.waits = fails, msg, 0, 0
+
+    def content(self):
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise RuntimeError(self.msg)
+        return "<html>ok</html>"
+
+    def wait_for_load_state(self, *_a, **_k):
+        self.waits += 1
+
+
+class PageHtmlRetry(unittest.TestCase):
+    def test_retries_while_navigating(self):
+        pg = _NavPage(fails=2)
+        self.assertEqual(G.page_html(pg, pause=0), "<html>ok</html>")
+        self.assertEqual((pg.calls, pg.waits), (3, 2))
+
+    def test_gives_up_after_tries(self):
+        with self.assertRaises(RuntimeError):
+            G.page_html(_NavPage(fails=9), tries=3, pause=0)
+
+    def test_other_errors_raise_at_once(self):
+        pg = _NavPage(fails=1, msg="Target page, context or browser has been closed")
+        with self.assertRaises(RuntimeError):
+            G.page_html(pg, pause=0)
+        self.assertEqual(pg.calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
