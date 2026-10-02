@@ -43,6 +43,14 @@ class ParseTitle(unittest.TestCase):
         for title in ("2025 Topps Chrome Superfractor LeBron James 1/1 #127 CGC AUTH", "PMG Red #23 Jordan (#063/100) - PSA Authentic/Altered"):
             self.assertIsNone(H.parse_title(title)["grade"], title)
 
+    def test_t206_back_is_not_a_serial(self):
+        p = H.parse_title("1909-11 T206 Ty Cobb Bat On Shoulder Sweet Caporal 350/30 PSA 8 NM-MT")
+        self.assertEqual((p["year"], p["serial"], p["print_run"], p["grade"]), (1909, None, None, "PSA 8"))
+        p = H.parse_title("1909-11 T206 Honus Wagner Piedmont 150/25 SGC 2")
+        self.assertEqual((p["serial"], p["print_run"]), (None, None))
+        # a real serial in the same title is still read
+        self.assertEqual(H.parse_title("2023 Topps Chrome Gold Refractor 12/50 #1 Ohtani")["serial"], "12/50")
+
     def test_nothing_to_read(self):
         p = H.parse_title("Shohei Ohtani Logoman")
         self.assertEqual((p["year"], p["code"], p["serial"], p["print_run"], p["grade"]), (None, None, None, None, None))
@@ -202,6 +210,35 @@ class CardMatches(unittest.TestCase):
 
     def test_print_run_must_agree(self):
         self.check("2012-13 Panini Prizm Gold Prizm #1 LeBron James /10", "2012 Panini Prizm", "Gold Prizm", False, print_run=10, cand_run=25)
+
+
+class Resolve(unittest.TestCase):
+    class FakeBeta:
+        def __init__(self, rows):
+            self.rows, self.calls = rows, []
+
+        def execute(self, sql, params):
+            self.calls.append((sql, params))
+            return self
+
+        def fetchall(self):
+            return self.rows
+
+    def test_card_number_is_filtered_in_sql(self):
+        b = self.FakeBeta([("mazi:bk:2025-topps-chrome-autograph:lebron-james:tca-lbj~refractor-red",
+                            "Basketball Cards 2025 Topps Chrome Autograph", "TCA-LBJ", "Refractor Red", None, 2025)])
+        s = {"player_keys": ["lebronjames"], "year": 2025, "code_key": "tcalbj", "print_run": None, "price": 198860,
+             "title": "2025-26 Topps Chrome Autographs Red Refractor #TCA-LBJ LeBron James Signed PSA 10"}
+        r = H.resolve(b, s)
+        self.assertEqual(r["status"], "resolved")
+        sql, params = b.calls[0]
+        self.assertNotIn("LIMIT", sql)
+        self.assertEqual(params[-1], "tcalbj")
+
+    def test_no_card_number_skips_the_query(self):
+        b = self.FakeBeta([])
+        r = H.resolve(b, {"player_keys": ["x"], "year": 2025, "code_key": None, "price": 1, "title": "x"})
+        self.assertEqual((r["status"], b.calls), ("needs_review", []))
 
 
 if __name__ == "__main__":

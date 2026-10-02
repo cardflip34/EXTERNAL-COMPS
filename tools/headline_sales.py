@@ -23,6 +23,7 @@ the plan (docs/HEADLINE_SALES_PLAN_20260929.md): table + mint + export are separ
 from __future__ import annotations
 
 import argparse, json, os, re, sys, time, unicodedata
+from html import unescape
 from datetime import date, datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,12 +32,19 @@ sys.path.insert(0, os.path.expanduser("~/whatnot-sniper"))      # the Mini's pro
 OUT = os.path.expanduser("~/mazi_headline")
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "headline_seed_2026.json")
 IMAGES = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"             # lot photos: comp_images/lotphoto_<house>/<source id>/01.jpg
-NEON_SOURCES = ["goldin", "fanatics", "rea", "heritage", "ebay"]
+# hugginsandscott / memorylane / lelands: the archive scrubs of 2026-09-29..10-01 (46 sales of $100K+ since 2025 were
+# in Neon but never read here)
+NEON_SOURCES = ["goldin", "fanatics", "rea", "heritage", "ebay", "hugginsandscott", "memorylane", "lelands"]
+AUCTION_HOUSES = ("goldin", "heritage", "rea", "hugginsandscott", "memorylane", "lelands")
 
 YEAR_RE = re.compile(r"\b(19[0-9]{2}|20[0-4][0-9])(?:[-/](\d{2}))?\b")
 CODE_RE = re.compile(r"#\s*([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)")
 SERIAL_RE = re.compile(r"(?<![#\w])(\d{1,3})\s*/\s*(\d{1,4})\b")   # "1/1", "05/10" -- never a card number: "#78 /99"
 RUN_RE = re.compile(r"/\s*(\d{1,4})\b")                                  # "/23", "#78/99" (no serial): print run only
+# a T206-era back is "<brand> <series>/<factory>" ("Sweet Caporal 350/30", "Piedmont 150/25"): not a serial or a print run
+# (1,616 Memory Lane and 96 Goldin titles, 2026-10-01)
+BACK_RE = re.compile(r"\b(?:sweet\s+caporal|piedmont|sovereign|polar\s+bear|old\s+mill|hindu|tolstoi|american\s+beauty|"
+                     r"carolina\s+brights|cycle|broad\s*leaf|uzit|lenox|drum)\s+\d{2,3}\s*/\s*\d{2,3}\b", re.I)
 # up to three descriptor words between grader and number: "SGC NM+ 7.5", "PSA EX-MT 6", "PSA Good 2", "BGS GEM MINT 9.5"
 # (the first version stopped at vintage descriptors and held 44 real $100K+ sales as "no grade", 2026-09-29)
 GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CGC)\s*(?:[A-Za-z][A-Za-z+\-]*\.?\s+){0,3}"
@@ -55,8 +63,9 @@ def fold(s):
 def parse_title(t):
     y = YEAR_RE.search(t or "")
     code = CODE_RE.search(t or "")
-    ser = SERIAL_RE.search(t or "")
-    run = None if ser else RUN_RE.search(t or "")
+    nb = BACK_RE.sub(" ", t or "")
+    ser = SERIAL_RE.search(nb)
+    run = None if ser else RUN_RE.search(nb)
     g = GRADE_RE.search(t or "")
     return {"year": int(y.group(1)) if y else None, "code": code.group(1) if code else None,
             "code_key": fold(code.group(1)) if code else None,
@@ -134,8 +143,9 @@ def collect_neon(min_price, since):
                      AND coalesce(canonical_source_url, source_url, raw->>'url', '') NOT LIKE '%%/buy-now/%%'""",
                 (min_price, since, NEON_SOURCES)):
             image = ("https://d2tt46f3mh26nl.cloudfront.net/public/Lots/%s/%s@2x" % (lot_id, pin)) if (s == "goldin" and lot_id and pin) else img
-            out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in ("goldin", "heritage", "rea") else "unknown",
-                        "source_id": sid, "neon_id": i, "title": t, "price": float(p), "date": d.isoformat(), "prec": "day", "url": url,
+            out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in AUCTION_HOUSES else "unknown",
+                        # Memory Lane / Lelands titles were stored HTML-escaped ("Stars &amp; Rookies", 2,041 rows)
+                        "source_id": sid, "neon_id": i, "title": unescape(t or ""), "price": float(p), "date": d.isoformat(), "prec": "day", "url": url,
                         "image": image})
         c.rollback()
     return out
@@ -284,11 +294,14 @@ def resolve(b, s):
     and card number whose set and parallel also agree with the title (card_matches)."""
     if not s["player_keys"] or not s["year"]:
         return {"status": "needs_review", "why": "player or year not read from the title", "candidates": []}
-    rows = b.execute("""SELECT card_id, set_name, number, parallel, print_run, season_year FROM public.beta_catalog
-                        WHERE player_key = ANY(%s) AND season_year BETWEEN %s AND %s AND visibility = 'visible' LIMIT 3000""",
-                     (s["player_keys"], s["year"] - 1, s["year"] + 1)).fetchall()
     if not s["code_key"]:
         return {"status": "needs_review", "why": "no card number in the title", "candidates": []}
+    # the card number is filtered in SQL: an unordered LIMIT 3000 over the player's whole catalog (LeBron, Wembanyama,
+    # Jayden Daniels have more in three seasons) dropped the right card at random -- 5 resolved sales flipped, 2026-10-01
+    rows = b.execute("""SELECT card_id, set_name, number, parallel, print_run, season_year FROM public.beta_catalog
+                        WHERE player_key = ANY(%s) AND season_year BETWEEN %s AND %s AND visibility = 'visible'
+                          AND lower(regexp_replace(number, '[^A-Za-z0-9]', '', 'g')) = %s""",
+                     (s["player_keys"], s["year"] - 1, s["year"] + 1, s["code_key"])).fetchall()
     same_number = [r for r in rows if fold(r[2]) == s["code_key"]]
     if not same_number:
         return {"status": "mint_candidate", "why": "card not in the catalog (player/year/card number)", "candidates": []}

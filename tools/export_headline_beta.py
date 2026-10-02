@@ -35,10 +35,13 @@ REPORT = Path(os.path.expanduser("~/mazi_headline/headline_sales_report.json"))
 OUT = Path(os.path.expanduser("~/private/fixtures/headline_export"))
 PROVIDER = "mazi_headline"
 HOUSE = {"goldin": "Goldin", "fanatics": "Fanatics Collect", "heritage": "Heritage Auctions", "rea": "Robert Edward Auctions",
-         "alt": "Alt", "ebay": "eBay", "hugginsandscott": "Huggins & Scott"}
+         "alt": "Alt", "ebay": "eBay", "hugginsandscott": "Huggins & Scott", "memorylane": "Memory Lane",
+         "lelands": "Lelands"}
 BASIS = {"goldin": "price realized incl. buyer's premium", "fanatics": "sale price as listed in Fanatics Collect's sales history",
          "heritage": "price realized as reported", "rea": "price realized as listed by REA", "alt": "sale price as reported",
-         "ebay": "sold price", "hugginsandscott": "price realized as listed"}
+         "ebay": "sold price", "hugginsandscott": "price realized as listed",
+         # both sites: "Prices Shown Include Buyer's Premium"
+         "memorylane": "price realized incl. buyer's premium", "lelands": "price realized incl. buyer's premium"}
 MIN_PRICE, FENCE, CORROBORATE = 100_000, 25.0, 10.0
 
 
