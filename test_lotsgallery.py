@@ -55,6 +55,13 @@ class _NavPage:
         self.waits += 1
 
 
+class TitleEntities(unittest.TestCase):
+    def test_titles_are_unescaped(self):
+        page = ('<div class="item"><h5 class="boxed">12</h5><a href="/bids/bidplace.aspx?itemid=9">1997 SP Authentic Sign of '
+                'the Times Stars &amp; Rookies #MJ Michael Jordan</a> Status: <strong>Sold</strong> SOLD FOR $1,000</div>')
+        self.assertEqual(G.parse_gallery(page)[0]["title"], "1997 SP Authentic Sign of the Times Stars & Rookies #MJ Michael Jordan")
+
+
 class PageHtmlRetry(unittest.TestCase):
     def test_retries_while_navigating(self):
         pg = _NavPage(fails=2)

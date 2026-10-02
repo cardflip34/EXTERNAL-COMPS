@@ -15,6 +15,7 @@ The archive is an ASP.NET postback: choosing an auction in <select id="Auction">
 """
 import argparse, json, os, re, sys, time
 from datetime import datetime
+from html import unescape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rea_scraper  # noqa: E402  (is_single_card)
@@ -41,7 +42,7 @@ def parse_gallery(html):
         if not m:
             continue
         lot, bids, st, sold = _LOT_RE.search(chunk), _BIDS_RE.search(chunk), _STATUS_RE.search(chunk), _SOLD_RE.search(chunk)
-        title = re.sub(r"\s+", " ", m.group(2)).strip()
+        title = unescape(re.sub(r"\s+", " ", m.group(2)).strip())     # "Stars &amp; Rookies" -> "Stars & Rookies"
         out.append({"itemid": m.group(1), "lot": lot.group(1) if lot else None, "title": title,
                     "bids": int(bids.group(1)) if bids else None, "status": st.group(1) if st else None,
                     "sold_price": float(sold.group(1).replace(",", "")) if sold else None})
