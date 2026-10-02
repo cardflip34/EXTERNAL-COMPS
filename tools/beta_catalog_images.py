@@ -18,19 +18,31 @@ The image URLs point at the Mini's public endpoint (Tailscale Funnel). That is f
 and reversible; the durable home is R2 (images.mazidex.com) -- rebuild the map with R2 URLs after an
 upload, --undo, --apply, and the same rows repoint.
 
+PHOTO GUARD (2026-10-02): the 09-22 map pointed 899 slugs at PriceCharting photos that were already dead (ledger
+dead:404, never on disk); 885 visible cards showed a broken tile. Every map row is now checked before it is loaded:
+its key must be on disk under comp_images/scp_catalog/ and its last ledger status must not be dead. Rows that fail are
+dropped and counted, so a re-run can never put a dead picture back (MAZIDEX clears those cards to NULL, which is exactly
+the state --apply fills).
+
 Modes (each needs --beta-password-file, mode 600, like the front end's own scripts):
   --verify            read-only: load map, compute matches, report counts + Kobe rows, ROLLBACK
   --apply [--limit N] write; --limit for a canary; requires --yes-i-understand-beta
-  --undo              clear image columns where the URL carries our prefix; requires --yes...
+  --undo              clear image columns where the URL is one of OUR SCP catalogue photos (/img/scp_catalog/);
+                      never lot photos or VeeFriends pictures, which share the host; requires --yes...
 """
 from __future__ import annotations
-import argparse, json, sys, time
+import argparse, csv, io, json, os, sys, time
 from pathlib import Path
 
 BETA = "jzxgtvxcuukxqkbwbuxg"
 HOST = "aws-0-us-west-1.pooler.supabase.com"   # session-mode pooler: TEMP tables + COPY need a session
 MAP_DEFAULT = "/Volumes/MAZI_EVIDENCE_6TB/comp_images/_backfill/refmap/beta_catalog_images.csv"
 OUR_PREFIX = "https://stavross-mac-mini.tail9fccf8.ts.net/"
+# what --undo may clear: only this tool's own pictures. The host also serves lot photos (/img/lotphoto_*) and
+# VeeFriends art (/img/ebay/) written by other lanes; the old prefix-only undo would have wiped those too.
+SCP_PREFIX = OUR_PREFIX + "img/scp_catalog/"
+IMAGE_ROOT = "/Volumes/MAZI_EVIDENCE_6TB/comp_images"
+LEDGER_DEFAULT = IMAGE_ROOT + "/_backfill/ledger_scp_catalog.jsonl"
 BATCH = 20000     # rows per UPDATE commit
 PAGE = 100000     # catalog cards per scan page (PK range); ~90 pages cover the 9M SCP rows
 
@@ -58,11 +70,54 @@ def connect(pw_file: Path, stmt_ms: int):
     return conn
 
 
-def load_map(cur, path: str) -> int:
+def ledger_dead(path: str) -> set:
+    """Keys whose LAST ledger record is dead (e.g. dead:404). 'skip' means already on disk, not dead."""
+    last = {}
+    if path and os.path.exists(path):
+        with open(path, errors="ignore") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("k"):
+                    last[r["k"]] = r.get("s")
+    return {k for k, s in last.items() if s == "dead"}
+
+
+def photo_on_disk(key: str, root: str = IMAGE_ROOT) -> bool:
+    base = os.path.join(root, "scp_catalog")
+    return any(os.path.exists(p) for p in (os.path.join(base, key[:2], key[2:4], key, "01.jpg"),
+                                           os.path.join(base, key, "01.jpg")))
+
+
+def usable_rows(path: str, dead: set, on_disk=photo_on_disk) -> tuple:
+    """Map rows (slug, url) whose photo can actually be served: our scp_catalog URL, key not ledger-dead, file on
+    disk. Returns (rows, counts)."""
+    rows, n = [], {"rows": 0, "kept": 0, "not_scp_catalog": 0, "ledger_dead": 0, "not_on_disk": 0}
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            n["rows"] += 1
+            url = (r.get("url") or "").strip()
+            if not url.startswith(SCP_PREFIX):
+                n["not_scp_catalog"] += 1; continue
+            key = url[len(SCP_PREFIX):].strip("/")
+            if key in dead:
+                n["ledger_dead"] += 1; continue
+            if not on_disk(key):
+                n["not_on_disk"] += 1; continue
+            rows.append((r["slug"], url)); n["kept"] += 1
+    return rows, n
+
+
+def load_map(cur, path: str, ledger: str = LEDGER_DEFAULT) -> int:
+    rows, n = usable_rows(path, ledger_dead(ledger))
+    print(f"map guard: {n}", flush=True)
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
     cur.execute("CREATE TEMP TABLE img(slug text PRIMARY KEY, url text NOT NULL)")
-    with open(path, newline="") as f, cur.copy("COPY img(slug,url) FROM STDIN WITH (FORMAT csv, HEADER true)") as cp:
-        for chunk in iter(lambda: f.read(1 << 20), ""):
-            cp.write(chunk)
+    with cur.copy("COPY img(slug,url) FROM STDIN WITH (FORMAT csv)") as cp:
+        cp.write(buf.getvalue())
     cur.execute("SELECT count(*) FROM img")
     return cur.fetchone()[0]
 
@@ -120,7 +175,7 @@ def build_matches(cur) -> dict:
 
 def verify(a) -> int:
     with connect(a.beta_password_file, 1800000) as c, c.cursor() as cur:
-        n = load_map(cur, a.map)
+        n = load_map(cur, a.map, a.ledger)
         print(f"map rows loaded : {n:,}", flush=True)
         r = build_matches(cur)
         cur.execute("SELECT card_id, url FROM m WHERE card_id LIKE 'mazi:bk:1996-topps-chrome:kobe-bryant:138%' ORDER BY card_id")
@@ -137,7 +192,7 @@ def verify(a) -> int:
 
 def apply(a) -> int:
     with connect(a.beta_password_file, 1800000) as c, c.cursor() as cur:
-        n = load_map(cur, a.map)
+        n = load_map(cur, a.map, a.ledger)
         r = build_matches(cur)
         cur.execute("CREATE TEMP TABLE todo AS SELECT card_id, url, row_number() OVER (ORDER BY card_id) rn FROM m WHERE NOT has_image"
                     + (f" LIMIT {int(a.limit)}" if a.limit else ""))
@@ -161,7 +216,7 @@ def apply(a) -> int:
             print(f"   written {done:,}/{total:,}", flush=True)
         cur.execute("INSERT INTO public.beta_import_runs(source, cards, sales, note) VALUES (%s,%s,0,%s)",
                     ("scp-catalog-images", done,
-                     f"reference images from the Mini SCP archive; url prefix {OUR_PREFIX}; undo: tools/beta_catalog_images.py --undo"))
+                     f"reference images from the Mini SCP archive; url prefix {SCP_PREFIX}; undo: tools/beta_catalog_images.py --undo"))
         c.commit()
     print(f"APPLY COMPLETE: {done:,} cards now carry a reference image")
     return 0
@@ -169,7 +224,7 @@ def apply(a) -> int:
 
 def undo(a) -> int:
     with connect(a.beta_password_file, 1800000) as c, c.cursor() as cur:
-        cur.execute("SELECT count(*) FROM public.beta_catalog WHERE image_small LIKE %s", (OUR_PREFIX + "%",))
+        cur.execute("SELECT count(*) FROM public.beta_catalog WHERE image_small LIKE %s", (SCP_PREFIX + "%",))
         total = cur.fetchone()[0]
         print(f"rows carrying our prefix: {total:,}")
         if not a.yes_i_understand_beta:
@@ -179,7 +234,7 @@ def undo(a) -> int:
         while True:
             cur.execute("""UPDATE public.beta_catalog SET image_small = NULL, image_large = NULL
                            WHERE card_id IN (SELECT card_id FROM public.beta_catalog WHERE image_small LIKE %s ORDER BY card_id LIMIT %s)""",
-                        (OUR_PREFIX + "%", BATCH))
+                        (SCP_PREFIX + "%", BATCH))
             if not cur.rowcount:
                 break
             done += cur.rowcount
@@ -194,6 +249,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--beta-password-file", type=Path, required=True)
     ap.add_argument("--map", default=MAP_DEFAULT)
+    ap.add_argument("--ledger", default=LEDGER_DEFAULT, help="photo download ledger; keys whose last status is dead are skipped")
     ap.add_argument("--report")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--verify", action="store_true")
