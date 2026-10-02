@@ -212,6 +212,16 @@ class CardMatches(unittest.TestCase):
         self.check("2012-13 Panini Prizm Gold Prizm #1 LeBron James /10", "2012 Panini Prizm", "Gold Prizm", False, print_run=10, cand_run=25)
 
 
+class NeonSourceId(unittest.TestCase):
+    def test_lot_url_becomes_the_item_id(self):
+        self.assertEqual(H.neon_source_id("memorylane", "https://bid.memorylaneinc.com/bids/bidplace.aspx?itemid=181220"), "181220")
+        self.assertEqual(H.neon_source_id("lelands", "https://auction.lelands.com/bids/bidplace.aspx?itemid=77"), "77")
+
+    def test_other_venues_unchanged(self):
+        self.assertEqual(H.neon_source_id("goldin", "GD-4370"), "GD-4370")
+        self.assertEqual(H.neon_source_id("memorylane", "no-item-here"), "no-item-here")
+
+
 class Resolve(unittest.TestCase):
     class FakeBeta:
         def __init__(self, rows):

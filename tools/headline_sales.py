@@ -126,6 +126,19 @@ def collect_fanatics(min_price, since, sleep=3.0):
     return rows
 
 
+ITEMID_RE = re.compile(r"[?&]itemid=(\d+)")
+
+
+def neon_source_id(venue, sid):
+    """The id a headline sale is keyed by (sale_id 'mazi-hl:<venue>:<id>'). Memory Lane / Lelands rows were bridged with
+    the lot URL as source_item_id; their lot is the URL's itemid ('.../bidplace.aspx?itemid=181220' -> '181220')."""
+    if venue in ("memorylane", "lelands") and sid:
+        m = ITEMID_RE.search(sid)
+        if m:
+            return m.group(1)
+    return sid
+
+
 def collect_neon(min_price, since):
     import psycopg
     with psycopg.connect(os.environ["MAZI_DB_URL"], connect_timeout=20) as c:
@@ -145,7 +158,7 @@ def collect_neon(min_price, since):
             image = ("https://d2tt46f3mh26nl.cloudfront.net/public/Lots/%s/%s@2x" % (lot_id, pin)) if (s == "goldin" and lot_id and pin) else img
             out.append({"src": "neon", "venue": s, "sale_type": "auction" if s in AUCTION_HOUSES else "unknown",
                         # Memory Lane / Lelands titles were stored HTML-escaped ("Stars &amp; Rookies", 2,041 rows)
-                        "source_id": sid, "neon_id": i, "title": unescape(t or ""), "price": float(p), "date": d.isoformat(), "prec": "day", "url": url,
+                        "source_id": neon_source_id(s, sid), "neon_id": i, "title": unescape(t or ""), "price": float(p), "date": d.isoformat(), "prec": "day", "url": url,
                         "image": image})
         c.rollback()
     return out
