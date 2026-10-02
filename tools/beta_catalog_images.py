@@ -22,7 +22,8 @@ PHOTO GUARD (2026-10-02): the 09-22 map pointed 899 slugs at PriceCharting photo
 dead:404, never on disk); 885 visible cards showed a broken tile. Every map row is now checked before it is loaded:
 its key must be on disk under comp_images/scp_catalog/ and its last ledger status must not be dead. Rows that fail are
 dropped and counted, so a re-run can never put a dead picture back (MAZIDEX clears those cards to NULL, which is exactly
-the state --apply fills).
+the state --apply fills). The ledger is trusted first: ok/skip = on disk. Only keys it does not know are stat'ed, because
+one stat on the busy 6TB costs ~450 ms (the whole 393K map would take ~49 h). --stat-all stats every key anyway.
 
 Modes (each needs --beta-password-file, mode 600, like the front end's own scripts):
   --verify            read-only: load map, compute matches, report counts + Kobe rows, ROLLBACK
@@ -70,8 +71,8 @@ def connect(pw_file: Path, stmt_ms: int):
     return conn
 
 
-def ledger_dead(path: str) -> set:
-    """Keys whose LAST ledger record is dead (e.g. dead:404). 'skip' means already on disk, not dead."""
+def ledger_last(path: str) -> dict:
+    """key -> LAST ledger status ('ok' downloaded, 'skip' already on disk, 'dead' e.g. 404)."""
     last = {}
     if path and os.path.exists(path):
         with open(path, errors="ignore") as f:
@@ -82,7 +83,7 @@ def ledger_dead(path: str) -> set:
                     continue
                 if r.get("k"):
                     last[r["k"]] = r.get("s")
-    return {k for k, s in last.items() if s == "dead"}
+    return last
 
 
 def photo_on_disk(key: str, root: str = IMAGE_ROOT) -> bool:
@@ -91,10 +92,11 @@ def photo_on_disk(key: str, root: str = IMAGE_ROOT) -> bool:
                                            os.path.join(base, key, "01.jpg")))
 
 
-def usable_rows(path: str, dead: set, on_disk=photo_on_disk) -> tuple:
-    """Map rows (slug, url) whose photo can actually be served: our scp_catalog URL, key not ledger-dead, file on
-    disk. Returns (rows, counts)."""
-    rows, n = [], {"rows": 0, "kept": 0, "not_scp_catalog": 0, "ledger_dead": 0, "not_on_disk": 0}
+def usable_rows(path: str, last: dict, on_disk=photo_on_disk, stat_all: bool = False) -> tuple:
+    """Map rows (slug, url) whose photo can actually be served: our scp_catalog URL, last ledger status not dead, and
+    on disk (ledger ok/skip, else a stat; stat_all stats every key). Returns (rows, counts)."""
+    rows, n = [], {"rows": 0, "kept": 0, "kept_by_ledger": 0, "kept_by_stat": 0, "not_scp_catalog": 0,
+                   "ledger_dead": 0, "not_on_disk": 0}
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
             n["rows"] += 1
@@ -102,16 +104,21 @@ def usable_rows(path: str, dead: set, on_disk=photo_on_disk) -> tuple:
             if not url.startswith(SCP_PREFIX):
                 n["not_scp_catalog"] += 1; continue
             key = url[len(SCP_PREFIX):].strip("/")
-            if key in dead:
+            st = last.get(key)
+            if st == "dead":
                 n["ledger_dead"] += 1; continue
-            if not on_disk(key):
+            if st in ("ok", "skip") and not stat_all:
+                n["kept_by_ledger"] += 1
+            elif on_disk(key):
+                n["kept_by_stat"] += 1
+            else:
                 n["not_on_disk"] += 1; continue
             rows.append((r["slug"], url)); n["kept"] += 1
     return rows, n
 
 
-def load_map(cur, path: str, ledger: str = LEDGER_DEFAULT) -> int:
-    rows, n = usable_rows(path, ledger_dead(ledger))
+def load_map(cur, path: str, ledger: str = LEDGER_DEFAULT, stat_all: bool = False) -> int:
+    rows, n = usable_rows(path, ledger_last(ledger), stat_all=stat_all)
     print(f"map guard: {n}", flush=True)
     buf = io.StringIO()
     csv.writer(buf).writerows(rows)
@@ -175,7 +182,7 @@ def build_matches(cur) -> dict:
 
 def verify(a) -> int:
     with connect(a.beta_password_file, 1800000) as c, c.cursor() as cur:
-        n = load_map(cur, a.map, a.ledger)
+        n = load_map(cur, a.map, a.ledger, a.stat_all)
         print(f"map rows loaded : {n:,}", flush=True)
         r = build_matches(cur)
         cur.execute("SELECT card_id, url FROM m WHERE card_id LIKE 'mazi:bk:1996-topps-chrome:kobe-bryant:138%' ORDER BY card_id")
@@ -192,7 +199,7 @@ def verify(a) -> int:
 
 def apply(a) -> int:
     with connect(a.beta_password_file, 1800000) as c, c.cursor() as cur:
-        n = load_map(cur, a.map, a.ledger)
+        n = load_map(cur, a.map, a.ledger, a.stat_all)
         r = build_matches(cur)
         cur.execute("CREATE TEMP TABLE todo AS SELECT card_id, url, row_number() OVER (ORDER BY card_id) rn FROM m WHERE NOT has_image"
                     + (f" LIMIT {int(a.limit)}" if a.limit else ""))
@@ -250,6 +257,7 @@ def main() -> int:
     ap.add_argument("--beta-password-file", type=Path, required=True)
     ap.add_argument("--map", default=MAP_DEFAULT)
     ap.add_argument("--ledger", default=LEDGER_DEFAULT, help="photo download ledger; keys whose last status is dead are skipped")
+    ap.add_argument("--stat-all", action="store_true", help="stat every key on disk, not only those the ledger does not know (slow: ~450 ms each on the 6TB)")
     ap.add_argument("--report")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--verify", action="store_true")

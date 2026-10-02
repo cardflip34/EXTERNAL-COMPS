@@ -37,8 +37,8 @@ class PhotoGuard(unittest.TestCase):
                             ("k3", "skip", 0)):                            # already on disk -> not dead
                 f.write(json.dumps({"k": k, "s": s, "c": c}) + "\n")
             f.write("not json\n")
-        self.assertEqual(B.ledger_dead(led), {"k2"})
-        self.assertEqual(B.ledger_dead(os.path.join(self.root, "missing.jsonl")), set())
+        self.assertEqual(B.ledger_last(led), {"k1": "ok", "k2": "dead", "k3": "skip"})
+        self.assertEqual(B.ledger_last(os.path.join(self.root, "missing.jsonl")), {})
 
     def test_usable_rows_drops_dead_missing_and_foreign(self):
         m = os.path.join(self.root, "map.csv")
@@ -50,9 +50,23 @@ class PhotoGuard(unittest.TestCase):
             f.write(f"s/gone,{P}cccc0000000000absent\n")
             f.write(f"s/lot,{B.OUR_PREFIX}img/lotphoto_goldin/123\n")
         on_disk = lambda k: B.photo_on_disk(k, self.root)
-        rows, n = B.usable_rows(m, {"bbbb00000000000flat1x"}, on_disk)
+        last = {"bbbb00000000000flat1x": "dead", "aaaa000000000000good": "ok"}
+        rows, n = B.usable_rows(m, last, on_disk)
         self.assertEqual(rows, [("s/good", P + "aaaa000000000000good"), ("s/flat", P + "bbbb00000000000flat1")])
-        self.assertEqual(n, {"rows": 5, "kept": 2, "not_scp_catalog": 1, "ledger_dead": 1, "not_on_disk": 1})
+        self.assertEqual(n, {"rows": 5, "kept": 2, "kept_by_ledger": 1, "kept_by_stat": 1, "not_scp_catalog": 1,
+                             "ledger_dead": 1, "not_on_disk": 1})
+
+    def test_ledger_ok_skips_the_stat_unless_stat_all(self):
+        m = os.path.join(self.root, "map.csv")
+        with open(m, "w") as f:
+            f.write(f"slug,url\ns/x,{P}dddd0000000000000ok1\n")
+        calls = []
+        def on_disk(k):
+            calls.append(k); return False
+        rows, n = B.usable_rows(m, {"dddd0000000000000ok1": "ok"}, on_disk)
+        self.assertEqual((len(rows), calls), (1, []))           # trusted, never stat'ed
+        rows, n = B.usable_rows(m, {"dddd0000000000000ok1": "ok"}, on_disk, stat_all=True)
+        self.assertEqual((len(rows), n["not_on_disk"], calls), (0, 1, ["dddd0000000000000ok1"]))
 
 
 class UndoScope(unittest.TestCase):
