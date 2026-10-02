@@ -348,6 +348,8 @@ def main():
     dsn = imp.dsn_for_target("prod")
     conn = psycopg.connect(dsn)
     conn.autocommit = False
+    conn.read_only = False    # BEGIN READ WRITE: immune to a read-only default leaked through the Neon pooler
+                              # (the 2026-10-02 09:03 PT run died on one: ReadOnlySqlTransaction on INSERT)
     cur = conn.cursor()
     print("=== BRIDGE %s (commit=%s) ===" % (codes, a.commit))
     before = {}
