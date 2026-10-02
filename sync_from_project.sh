@@ -32,7 +32,8 @@ for f in veefriends_link.py veefriends_stickers.py veefriends_variants.py test_v
          render_pages_cdp.py fanatics_title_backfill.py ebay_signed_in_sweep.py import_ebay_sweep.py build_scp_ebay_ids.py \
          bridge_scp_broad_to_neon.py test_bridge_batch.py scp_broad_scrub.py sources_supervisor.py \
          headline_sales.py test_headline_sales.py headline_seed_2026.json headline_review.py \
-         export_headline_beta.py test_export_headline_beta.py headline_mint.py lotphoto_fetch.py; do
+         export_headline_beta.py test_export_headline_beta.py headline_mint.py lotphoto_fetch.py \
+         build_image_allowlist.py; do
   rsync -a "$P/tools/$f" "$R/tools/"
 done
 for f in fanatics_recent_refresh.py fanatics_full_catalog_scraper_v3.py fanatics_full_catalog_scraper_v3_price_bands.py \
@@ -47,6 +48,8 @@ rsync -a --include '*.sh' --include '*.py' --exclude '*' "$HOME/mazi_scp_broad/"
 rsync -a "$HOME/mazi_veefriends/daily_refresh.sh" "$HOME/mazi_veefriends/extract_checklist.py" "$R/ops/veefriends/"
 rsync -a --exclude 'chrome_profile' "$HOME/mazi_ebay_session/" "$R/ops/ebay_session/"
 cp "$HOME/Library/LaunchAgents/com.mazi.veefriends-daily.plist" "$R/ops/launchd/"
+# image allow-list builder (2026-10-01): copy the INSTALLED plist once the lane has installed it
+[ -f "$HOME/Library/LaunchAgents/com.mazi.image-allowlist.plist" ] && cp "$HOME/Library/LaunchAgents/com.mazi.image-allowlist.plist" "$R/ops/launchd/"
 # tripwire: every script the sources supervisor launches must be in this repo
 /usr/bin/python3 - "$P" "$R" <<'PY2'
 import os, re, sys

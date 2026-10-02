@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Public image allow-list builder (2026-10-01, "lock down the mini image server"). NOT INSTALLED by the repo.
+
+  Twice a day (04:40 and 16:40 local), plus on demand: tools/build_image_allowlist.py reads
+  beta_catalog.image_small / image_large READ-ONLY (one sequential scan behind a cursor, in one READ ONLY
+  transaction; it reads the whole ~6.2 GB heap, through Postgres's bulk-read ring buffer so the site's cached pages
+  stay put) and atomically rewrites ~/mazi_local_evidence/image_allowlist/public_allowlist.txt, then drops staged
+  keys that are now listed (--prune-staged). comp_image_server.py notices the change within ~30 s and swaps it in;
+  a list that does not parse is ignored (last good stays, also across restarts), and the builder refuses a >10%
+  shrink of the total or of any source with >= 100 keys.
+  Kept to twice a day on purpose: the beta is a Small instance shared with the live site and staging. A lane that
+  writes new picture URLs into beta_catalog should kickstart it (below) instead of waiting.
+
+  A plain LaunchAgent is fine here (unlike the image server itself): it touches only the home folder
+  (~/private/beta-password, ~/mazi_local_evidence) and the network, never the TCC-protected 6TB.
+
+  Install (EXTERNAL COMPS lane, operator approval; see docs/IMAGE_SERVER_RUNBOOK.md):
+    cp ~/whatnot-sniper/ops/launchd/com.mazi.image-allowlist.plist ~/Library/LaunchAgents/
+    plutil -lint ~/Library/LaunchAgents/com.mazi.image-allowlist.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mazi.image-allowlist.plist
+    launchctl print gui/$(id -u)/com.mazi.image-allowlist | grep -E 'state|last exit'
+  Run once now:  launchctl kickstart gui/$(id -u)/com.mazi.image-allowlist
+  Rollback (MANDATORY whenever the server is rolled back -- the builder imports the server module and crashes
+  against the old one):
+                 launchctl bootout gui/$(id -u)/com.mazi.image-allowlist; rm -f ~/Library/LaunchAgents/com.mazi.image-allowlist.plist
+  Log:           ~/Library/Logs/mazi_external_comps/image_allowlist.out
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.mazi.image-allowlist</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/python3</string>
+    <string>-u</string>
+    <string>/Users/stavrosaimini/whatnot-sniper/tools/build_image_allowlist.py</string>
+    <string>--prune-staged</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/stavrosaimini/whatnot-sniper</string>
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>40</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StandardOutPath</key><string>/Users/stavrosaimini/Library/Logs/mazi_external_comps/image_allowlist.out</string>
+  <key>StandardErrorPath</key><string>/Users/stavrosaimini/Library/Logs/mazi_external_comps/image_allowlist.out</string>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+</dict></plist>
