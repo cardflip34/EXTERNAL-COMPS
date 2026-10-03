@@ -245,7 +245,10 @@ def manage_lanes(state: dict, level: str) -> None:
         else:
             st["red_ticks"] = 0
         if pids:
-            if st["red_ticks"] >= RED_STOP_TICKS:
+            # Stop only lanes whose max_level is below RED. comp_image_server is max_level RED (an idle socket the site
+            # reads), but this check ignored max_level and SIGTERMed it on every RED streak: 289 times 09-22..10-03,
+            # 110 on 10-01 alone, each one blanking site pictures until the next tick relaunched it.
+            if st["red_ticks"] >= RED_STOP_TICKS and LEVEL_RANK[lane["max_level"]] < LEVEL_RANK["RED"]:
                 for p in pids:
                     try:
                         os.kill(p, signal.SIGTERM)
