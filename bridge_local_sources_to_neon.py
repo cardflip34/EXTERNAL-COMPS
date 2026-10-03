@@ -234,6 +234,14 @@ def drop_goldin_gd_duplicates(rows, gd_rows):
     return out
 
 
+def txn_guard(cur, timeout="15min"):
+    """Run at the start of EVERY transaction. Through the Neon pooler (PgBouncer, transaction mode) a session-level SET
+    from another client rides the server connection to the next one: on 2026-10-02 one local-bridge run died read-only
+    and the next on a leaked short statement_timeout during its opening count. SET LOCAL lives and dies with this
+    transaction (which never changes server connection), so it neither inherits a leaked value nor leaks one."""
+    cur.execute("SET LOCAL statement_timeout = %s" % ("'" + timeout + "'"))
+
+
 def bridge_source(cur, code, commit):
     cfg = SOURCES[code]
     path = os.path.join(ROOT, cfg["file"])
@@ -265,6 +273,7 @@ def bridge_source(cur, code, commit):
                 r["sold_date"], r["sold_price"], r["title"][:44], r["source_item_id"][:40]))
     if not commit:
         return 0
+    txn_guard(cur)
     # ensure comp_sources row
     cur.execute("""INSERT INTO comp_sources
         (source_code, source_name, source_type, supports_sold, supports_active, obo_policy, active)
@@ -302,6 +311,7 @@ def bridge_source(cur, code, commit):
         # leg -- and sources after goldin never ran. Inserts are idempotent (preloaded ids + ON CONFLICT DO NOTHING).
         if (i // BATCH) % 20 == 19:
             cur.connection.commit()
+            txn_guard(cur)
             print("  [%s] %d/%d offered, %d inserted so far [committed]" % (code, i + len(chunk), len(fresh), inserted),
                   flush=True)
     return inserted
@@ -353,6 +363,7 @@ def main():
     cur = conn.cursor()
     print("=== BRIDGE %s (commit=%s) ===" % (codes, a.commit))
     before = {}
+    txn_guard(cur)
     for code in codes:
         cur.execute("select count(*) from external_transactions where source_code=%s", (code,))
         before[code] = cur.fetchone()[0]
@@ -374,6 +385,7 @@ def main():
     if a.commit:
         # verify from a FRESH connection (psycopg savepoint/scoping safety)
         v = psycopg.connect(dsn); vc = v.cursor()
+        txn_guard(vc)
         print("\n=== VERIFY (fresh connection) ===")
         for code in codes:
             vc.execute("select count(*),min(sold_date),max(sold_date) from external_transactions where source_code=%s", (code,))
