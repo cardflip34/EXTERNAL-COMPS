@@ -48,6 +48,9 @@ ENV_FILE = os.path.join(ROOT, ".env.external_comps_bridge")
 
 CYCLE_SLEEP = int(os.environ.get("SRC_SUP_CYCLE_SLEEP", "600"))
 AR_EVERY_H = float(os.environ.get("SRC_SUP_AR_EVERY_H", "6"))
+# RETIRED 2026-10-03 (Andy): auctionreport.com's RSS has answered HTTP 403 since 2026-09-13, so every 6 h leg failed
+# (rc=1) and added nothing. Its 398 rows stay in Neon. SRC_SUP_AR=1 turns the leg back on.
+AR_ENABLED = os.environ.get("SRC_SUP_AR", "0") == "1"
 BRIDGE_EVERY_H = float(os.environ.get("SRC_SUP_BRIDGE_EVERY_H", "24"))
 GOLDIN_EVERY_H = float(os.environ.get("SRC_SUP_GOLDIN_EVERY_H", "24"))
 GOLDIN_WINDOW_DAYS = int(os.environ.get("SRC_SUP_GOLDIN_WINDOW_DAYS", "30"))
@@ -253,7 +256,7 @@ def main():
             fanatics_keepalive(state)
 
         # 2) auctionreport (6h) — skip if an instance is already running
-        if hours_since((state.get("last_auctionreport") or {}).get("at")) >= AR_EVERY_H:
+        if AR_ENABLED and hours_since((state.get("last_auctionreport") or {}).get("at")) >= AR_EVERY_H:
             if dry:
                 print("[dry] would run auctionreport_scraper.py", flush=True)
             elif pgrep("auctionreport_scraper.py"):
