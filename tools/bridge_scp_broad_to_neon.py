@@ -328,6 +328,7 @@ def connect_db():
         keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
     )
     conn.autocommit = False
+    conn.read_only = False    # BEGIN READ WRITE: immune to a read-only default leaked through the Neon pooler (2026-10-02)
     return conn
 
 

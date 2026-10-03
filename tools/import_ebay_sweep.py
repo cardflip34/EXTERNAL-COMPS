@@ -69,6 +69,7 @@ def cycle(segments, max_rows=None):
     if not pending:
         return 0, 0
     conn = psycopg.connect(dsn_for_prod(), row_factory=dict_row, keepalives=1, keepalives_idle=30)
+    conn.read_only = False    # BEGIN READ WRITE: immune to a read-only default leaked through the Neon pooler (2026-10-02)
     cur = conn.cursor()
     rid = cur.execute("""INSERT INTO public.comp_import_runs (lane, source_code, input_uri, target_db, dry_run, status, params)
                          VALUES ('nightly_delta','ebay',%s,'prod',false,'started',%s) RETURNING id""",
