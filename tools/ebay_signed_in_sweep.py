@@ -95,8 +95,15 @@ class Browser:
         self.extract, self.block, self.parse_date, self.price = extract_listings, block_signature, parse_listing_sold_date, _price
         self.c, self.args = c, args
         self.pw = sync_playwright().start()
-        self.browser = self.pw.chromium.connect_over_cdp(args.cdp)
-        self.page = self.browser.contexts[0].new_page()
+        try:
+            self.browser = self.pw.chromium.connect_over_cdp(args.cdp)
+            self.page = self.browser.contexts[0].new_page()
+        except BaseException:
+            # A failed connect left Playwright started. cmd_run's `finally` only closes a Browser it received, so
+            # without this stop every later retry in the process failed with "Playwright Sync API inside the asyncio
+            # loop": the sports sweep sat dead that way from 2026-09-29, Pokemon from 10-02.
+            self.pw.stop()
+            raise
         self.loads, self.next_break = 0, random.randint(args.break_every_min, args.break_every_max)
 
     def close(self):
